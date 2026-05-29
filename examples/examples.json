@@ -1,0 +1,14 @@
+[
+    {
+        "question": "List all students",
+        "sql": "SELECT * FROM student;"
+    },
+    {
+        "question": "Show all departments",
+        "sql": "SELECT * FROM department;"
+    },
+    {
+        "question": "Count total students",
+        "sql": "SELECT COUNT(*) FROM student;"
+    }
+]

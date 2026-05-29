@@ -1,0 +1,475 @@
+{
+    "advisor": {
+        "columns": [
+            {
+                "name": "s_ID",
+                "type": "VARCHAR(5)",
+                "nullable": true
+            },
+            {
+                "name": "i_ID",
+                "type": "VARCHAR(5)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "s_ID"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "i_ID"
+                ],
+                "referred_table": "instructor",
+                "referred_columns": [
+                    "ID"
+                ]
+            },
+            {
+                "constrained_columns": [
+                    "s_ID"
+                ],
+                "referred_table": "student",
+                "referred_columns": [
+                    "ID"
+                ]
+            }
+        ]
+    },
+    "classroom": {
+        "columns": [
+            {
+                "name": "building",
+                "type": "VARCHAR(15)",
+                "nullable": true
+            },
+            {
+                "name": "room_number",
+                "type": "VARCHAR(7)",
+                "nullable": true
+            },
+            {
+                "name": "capacity",
+                "type": "NUMERIC(4, 0)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "building",
+            "room_number"
+        ],
+        "foreign_keys": []
+    },
+    "course": {
+        "columns": [
+            {
+                "name": "course_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "title",
+                "type": "VARCHAR(50)",
+                "nullable": true
+            },
+            {
+                "name": "dept_name",
+                "type": "VARCHAR(20)",
+                "nullable": true
+            },
+            {
+                "name": "credits",
+                "type": "NUMERIC(2, 0)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "course_id"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "dept_name"
+                ],
+                "referred_table": "department",
+                "referred_columns": [
+                    "dept_name"
+                ]
+            }
+        ]
+    },
+    "department": {
+        "columns": [
+            {
+                "name": "dept_name",
+                "type": "VARCHAR(20)",
+                "nullable": true
+            },
+            {
+                "name": "building",
+                "type": "VARCHAR(15)",
+                "nullable": true
+            },
+            {
+                "name": "budget",
+                "type": "NUMERIC(12, 2)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "dept_name"
+        ],
+        "foreign_keys": []
+    },
+    "instructor": {
+        "columns": [
+            {
+                "name": "ID",
+                "type": "VARCHAR(5)",
+                "nullable": true
+            },
+            {
+                "name": "name",
+                "type": "VARCHAR(20)",
+                "nullable": false
+            },
+            {
+                "name": "dept_name",
+                "type": "VARCHAR(20)",
+                "nullable": true
+            },
+            {
+                "name": "salary",
+                "type": "NUMERIC(8, 2)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "ID"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "dept_name"
+                ],
+                "referred_table": "department",
+                "referred_columns": [
+                    "dept_name"
+                ]
+            }
+        ]
+    },
+    "prereq": {
+        "columns": [
+            {
+                "name": "course_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "prereq_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "course_id",
+            "prereq_id"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "course_id"
+                ],
+                "referred_table": "course",
+                "referred_columns": [
+                    "course_id"
+                ]
+            },
+            {
+                "constrained_columns": [
+                    "prereq_id"
+                ],
+                "referred_table": "course",
+                "referred_columns": [
+                    "course_id"
+                ]
+            }
+        ]
+    },
+    "section": {
+        "columns": [
+            {
+                "name": "course_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "sec_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "semester",
+                "type": "VARCHAR(6)",
+                "nullable": true
+            },
+            {
+                "name": "year",
+                "type": "NUMERIC(4, 0)",
+                "nullable": true
+            },
+            {
+                "name": "building",
+                "type": "VARCHAR(15)",
+                "nullable": true
+            },
+            {
+                "name": "room_number",
+                "type": "VARCHAR(7)",
+                "nullable": true
+            },
+            {
+                "name": "time_slot_id",
+                "type": "VARCHAR(4)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "course_id",
+            "sec_id",
+            "semester",
+            "year"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "course_id"
+                ],
+                "referred_table": "course",
+                "referred_columns": [
+                    "course_id"
+                ]
+            },
+            {
+                "constrained_columns": [
+                    "building",
+                    "room_number"
+                ],
+                "referred_table": "classroom",
+                "referred_columns": [
+                    "building",
+                    "room_number"
+                ]
+            }
+        ]
+    },
+    "student": {
+        "columns": [
+            {
+                "name": "ID",
+                "type": "VARCHAR(5)",
+                "nullable": true
+            },
+            {
+                "name": "name",
+                "type": "VARCHAR(20)",
+                "nullable": false
+            },
+            {
+                "name": "dept_name",
+                "type": "VARCHAR(20)",
+                "nullable": true
+            },
+            {
+                "name": "tot_cred",
+                "type": "NUMERIC(3, 0)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "ID"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "dept_name"
+                ],
+                "referred_table": "department",
+                "referred_columns": [
+                    "dept_name"
+                ]
+            }
+        ]
+    },
+    "takes": {
+        "columns": [
+            {
+                "name": "ID",
+                "type": "VARCHAR(5)",
+                "nullable": true
+            },
+            {
+                "name": "course_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "sec_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "semester",
+                "type": "VARCHAR(6)",
+                "nullable": true
+            },
+            {
+                "name": "year",
+                "type": "NUMERIC(4, 0)",
+                "nullable": true
+            },
+            {
+                "name": "grade",
+                "type": "VARCHAR(2)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "ID",
+            "course_id",
+            "sec_id",
+            "semester",
+            "year"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "course_id",
+                    "sec_id",
+                    "semester",
+                    "year"
+                ],
+                "referred_table": "section",
+                "referred_columns": [
+                    "course_id",
+                    "sec_id",
+                    "semester",
+                    "year"
+                ]
+            },
+            {
+                "constrained_columns": [
+                    "ID"
+                ],
+                "referred_table": "student",
+                "referred_columns": [
+                    "ID"
+                ]
+            }
+        ]
+    },
+    "teaches": {
+        "columns": [
+            {
+                "name": "ID",
+                "type": "VARCHAR(5)",
+                "nullable": true
+            },
+            {
+                "name": "course_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "sec_id",
+                "type": "VARCHAR(8)",
+                "nullable": true
+            },
+            {
+                "name": "semester",
+                "type": "VARCHAR(6)",
+                "nullable": true
+            },
+            {
+                "name": "year",
+                "type": "NUMERIC(4, 0)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "ID",
+            "course_id",
+            "sec_id",
+            "semester",
+            "year"
+        ],
+        "foreign_keys": [
+            {
+                "constrained_columns": [
+                    "course_id",
+                    "sec_id",
+                    "semester",
+                    "year"
+                ],
+                "referred_table": "section",
+                "referred_columns": [
+                    "course_id",
+                    "sec_id",
+                    "semester",
+                    "year"
+                ]
+            },
+            {
+                "constrained_columns": [
+                    "ID"
+                ],
+                "referred_table": "instructor",
+                "referred_columns": [
+                    "ID"
+                ]
+            }
+        ]
+    },
+    "time_slot": {
+        "columns": [
+            {
+                "name": "time_slot_id",
+                "type": "VARCHAR(4)",
+                "nullable": true
+            },
+            {
+                "name": "day",
+                "type": "VARCHAR(1)",
+                "nullable": true
+            },
+            {
+                "name": "start_hr",
+                "type": "NUMERIC(2)",
+                "nullable": true
+            },
+            {
+                "name": "start_min",
+                "type": "NUMERIC(2)",
+                "nullable": true
+            },
+            {
+                "name": "end_hr",
+                "type": "NUMERIC(2)",
+                "nullable": true
+            },
+            {
+                "name": "end_min",
+                "type": "NUMERIC(2)",
+                "nullable": true
+            }
+        ],
+        "primary_keys": [
+            "time_slot_id",
+            "day",
+            "start_hr",
+            "start_min"
+        ],
+        "foreign_keys": []
+    }
+}
