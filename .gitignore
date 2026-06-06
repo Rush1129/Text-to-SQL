@@ -1,3 +1,4 @@
 .env
 .venv/
 note.txt
+chroma_db/
