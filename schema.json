@@ -34,8 +34,7 @@
                     "ID"
                 ]
             }
-        ],
-        "description": "This table records the advisor relationship between students and instructors, linking each student (s_ID) to their assigned advisor (i_ID). It serves to identify which instructor is responsible for guiding each student."
+        ]
     },
     "classroom": {
         "columns": [
@@ -59,8 +58,7 @@
             "building",
             "room_number"
         ],
-        "foreign_keys": [],
-        "description": "The classroom table records each classroom\u2019s location and seating capacity, identified by building and room number. It is used to track room availability and capacity for scheduling courses."
+        "foreign_keys": []
     },
     "course": {
         "columns": [
@@ -98,8 +96,7 @@
                     "dept_name"
                 ]
             }
-        ],
-        "description": "The course table stores information about academic courses, including a unique course ID, title, department affiliation, and credit value. It is used to link courses to their respective departments and support course catalog and enrollment functions."
+        ]
     },
     "department": {
         "columns": [
@@ -122,8 +119,7 @@
         "primary_keys": [
             "dept_name"
         ],
-        "foreign_keys": [],
-        "description": "The department table records each department\u2019s name, the building where it is located, and its allocated budget. It is used to track departmental resources and location within the organization."
+        "foreign_keys": []
     },
     "instructor": {
         "columns": [
@@ -161,8 +157,7 @@
                     "dept_name"
                 ]
             }
-        ],
-        "description": "The instructor table stores faculty member details such as ID, name, department affiliation, and salary. It is used to manage instructor records and link them to the department table."
+        ]
     },
     "prereq": {
         "columns": [
@@ -200,8 +195,7 @@
                     "course_id"
                 ]
             }
-        ],
-        "description": "The prereq table records prerequisite relationships between courses, mapping each course to the courses that must be completed beforehand. Each row indicates that course_id requires prereq_id to be completed first."
+        ]
     },
     "section": {
         "columns": [
@@ -268,8 +262,7 @@
                     "room_number"
                 ]
             }
-        ],
-        "description": "The section table records individual offerings of courses, identified by course ID, section ID, semester, and year, and includes the building, room number, and time slot where the section meets. It links each section to its course and classroom for scheduling and enrollment purposes."
+        ]
     },
     "student": {
         "columns": [
@@ -307,8 +300,7 @@
                     "dept_name"
                 ]
             }
-        ],
-        "description": "The student table stores individual student records, including a unique ID, name, department affiliation, and total credits earned. It serves to track academic progress and link each student to their respective department."
+        ]
     },
     "takes": {
         "columns": [
@@ -375,8 +367,7 @@
                     "ID"
                 ]
             }
-        ],
-        "description": "The takes table records student enrollments in specific course sections, storing the student ID, course and section identifiers, semester, year, and the grade earned. It links students to sections and tracks their academic performance."
+        ]
     },
     "teaches": {
         "columns": [
@@ -438,8 +429,7 @@
                     "ID"
                 ]
             }
-        ],
-        "description": "The teaches table records which instructor (ID) is assigned to teach a specific course section (course_id, sec_id) during a particular semester and year. It links instructors to course sections, enabling tracking of teaching assignments and schedules."
+        ]
     },
     "time_slot": {
         "columns": [
@@ -480,7 +470,6 @@
             "start_hr",
             "start_min"
         ],
-        "foreign_keys": [],
-        "description": "The time_slot table defines discrete scheduling intervals, storing a unique slot ID, day of the week, and start/end times broken into hours and minutes. It serves as a reference for booking or availability windows in the application."
+        "foreign_keys": []
     }
 }

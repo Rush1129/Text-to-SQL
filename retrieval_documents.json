@@ -1,0 +1,46 @@
+[
+    {
+        "table_name": "advisor",
+        "content": "Table Name:\nadvisor\n\nColumns:\ns_ID (VARCHAR(5)), i_ID (VARCHAR(5))\n\nPrimary Keys:\ns_ID\n\nRelationships:\n\nadvisor.i_ID -> instructor.ID\nadvisor.s_ID -> student.ID"
+    },
+    {
+        "table_name": "classroom",
+        "content": "Table Name:\nclassroom\n\nColumns:\nbuilding (VARCHAR(15)), room_number (VARCHAR(7)), capacity (NUMERIC(4, 0))\n\nPrimary Keys:\nbuilding, room_number\n\nRelationships:"
+    },
+    {
+        "table_name": "course",
+        "content": "Table Name:\ncourse\n\nColumns:\ncourse_id (VARCHAR(8)), title (VARCHAR(50)), dept_name (VARCHAR(20)), credits (NUMERIC(2, 0))\n\nPrimary Keys:\ncourse_id\n\nRelationships:\n\ncourse.dept_name -> department.dept_name"
+    },
+    {
+        "table_name": "department",
+        "content": "Table Name:\ndepartment\n\nColumns:\ndept_name (VARCHAR(20)), building (VARCHAR(15)), budget (NUMERIC(12, 2))\n\nPrimary Keys:\ndept_name\n\nRelationships:"
+    },
+    {
+        "table_name": "instructor",
+        "content": "Table Name:\ninstructor\n\nColumns:\nID (VARCHAR(5)), name (VARCHAR(20)), dept_name (VARCHAR(20)), salary (NUMERIC(8, 2))\n\nPrimary Keys:\nID\n\nRelationships:\n\ninstructor.dept_name -> department.dept_name"
+    },
+    {
+        "table_name": "prereq",
+        "content": "Table Name:\nprereq\n\nColumns:\ncourse_id (VARCHAR(8)), prereq_id (VARCHAR(8))\n\nPrimary Keys:\ncourse_id, prereq_id\n\nRelationships:\n\nprereq.course_id -> course.course_id\nprereq.prereq_id -> course.course_id"
+    },
+    {
+        "table_name": "section",
+        "content": "Table Name:\nsection\n\nColumns:\ncourse_id (VARCHAR(8)), sec_id (VARCHAR(8)), semester (VARCHAR(6)), year (NUMERIC(4, 0)), building (VARCHAR(15)), room_number (VARCHAR(7)), time_slot_id (VARCHAR(4))\n\nPrimary Keys:\ncourse_id, sec_id, semester, year\n\nRelationships:\n\nsection.course_id -> course.course_id\nsection.building,room_number -> classroom.building,room_number"
+    },
+    {
+        "table_name": "student",
+        "content": "Table Name:\nstudent\n\nColumns:\nID (VARCHAR(5)), name (VARCHAR(20)), dept_name (VARCHAR(20)), tot_cred (NUMERIC(3, 0))\n\nPrimary Keys:\nID\n\nRelationships:\n\nstudent.dept_name -> department.dept_name"
+    },
+    {
+        "table_name": "takes",
+        "content": "Table Name:\ntakes\n\nColumns:\nID (VARCHAR(5)), course_id (VARCHAR(8)), sec_id (VARCHAR(8)), semester (VARCHAR(6)), year (NUMERIC(4, 0)), grade (VARCHAR(2))\n\nPrimary Keys:\nID, course_id, sec_id, semester, year\n\nRelationships:\n\ntakes.course_id,sec_id,semester,year -> section.course_id,sec_id,semester,year\ntakes.ID -> student.ID"
+    },
+    {
+        "table_name": "teaches",
+        "content": "Table Name:\nteaches\n\nColumns:\nID (VARCHAR(5)), course_id (VARCHAR(8)), sec_id (VARCHAR(8)), semester (VARCHAR(6)), year (NUMERIC(4, 0))\n\nPrimary Keys:\nID, course_id, sec_id, semester, year\n\nRelationships:\n\nteaches.course_id,sec_id,semester,year -> section.course_id,sec_id,semester,year\nteaches.ID -> instructor.ID"
+    },
+    {
+        "table_name": "time_slot",
+        "content": "Table Name:\ntime_slot\n\nColumns:\ntime_slot_id (VARCHAR(4)), day (VARCHAR(1)), start_hr (NUMERIC(2)), start_min (NUMERIC(2)), end_hr (NUMERIC(2)), end_min (NUMERIC(2))\n\nPrimary Keys:\ntime_slot_id, day, start_hr, start_min\n\nRelationships:"
+    }
+]

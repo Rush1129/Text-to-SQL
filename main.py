@@ -1,4 +1,5 @@
 import json
+import chromadb
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
@@ -11,6 +12,18 @@ load_dotenv()
 
 with open("outputs/schema.json", "r") as f:
     schema = json.load(f)
+
+# =========================================================
+# LOAD CHROMADB COLLECTION
+# =========================================================
+
+chroma_client = chromadb.PersistentClient(
+    path="./chroma_db"
+)
+
+collection = chroma_client.get_collection(
+    name="table_schemas"
+)
 
 # =========================================================
 # LOAD FEW-SHOT EXAMPLES
@@ -39,20 +52,18 @@ llm = ChatGroq(
 # RELEVANT TABLE SELECTION
 # =========================================================
 
-def get_relevant_tables(question):
+def get_relevant_tables(question, top_k=3):
 
-    question = question.lower()
+    results = collection.query(
+        query_texts=[question],
+        n_results=top_k
+    )
 
-    relevant_tables = []
-
-    for table_name in schema.keys():
-
-        if table_name.lower() in question:
-            relevant_tables.append(table_name)
-
-    # fallback if nothing matched
-    if not relevant_tables:
-        relevant_tables = list(schema.keys())[:3]
+    # Extract table names from metadata
+    relevant_tables = [
+        m["table_name"]
+        for m in results["metadatas"][0]
+    ]
 
     return relevant_tables
 
