@@ -4,6 +4,12 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
+from structured_models import (
+    StructuredSQLResponse,
+    validate_sql_syntax,
+)
+from sql_guardrails import SQLGuardrail
+from sandbox_executor import SandboxExecutor
 
 load_dotenv()
 # =========================================================
@@ -46,6 +52,29 @@ except FileNotFoundError:
 llm = ChatGroq(
     model="openai/gpt-oss-20b",
     temperature=0
+)
+
+# =========================================================
+# STRUCTURED OUTPUT LLM (for SQL generation)
+# =========================================================
+
+structured_llm = llm.with_structured_output(
+    StructuredSQLResponse
+)
+
+# =========================================================
+# GUARDRAIL MIDDLEWARE
+# =========================================================
+
+guardrail = SQLGuardrail()  # uses default config
+
+# =========================================================
+# SANDBOX EXECUTOR
+# =========================================================
+
+sandbox = SandboxExecutor(
+    db_path="database/college_2.sqlite",
+    readonly=True,
 )
 
 # =========================================================
@@ -316,13 +345,17 @@ def build_prompt(user_question):
 You are an expert SQLite SQL generator.
 
 Rules:
-1. Generate ONLY SQL query.
-2. Do NOT explain anything.
-3. Use ONLY tables and columns provided.
-4. Generate syntactically correct SQLite SQL.
-5. Use proper JOINS using relationships.
-6. If the question is ambiguous, do not guess. The application will ask
+1. Use ONLY tables and columns provided in the schema.
+2. Generate syntactically correct SQLite SQL.
+3. Use proper JOINS using the relationships provided.
+4. If the question is ambiguous, do not guess. The application will ask
    for clarification before this prompt is sent.
+5. For the confidence_score, rate your confidence from 0.0 to 1.0 that
+   the generated SQL correctly answers the user's question.
+6. In tables_accessed, list every table name referenced in the query.
+7. In columns_accessed, list every column with its table name.
+8. In explanation, provide a clear natural language description of what
+   the SQL query does.
 
 Database Schema:
 {schema_text}
@@ -333,8 +366,6 @@ Database Schema:
 
 User Question:
 {user_question}
-
-SQL:
 """
 
     return prompt
@@ -355,7 +386,7 @@ prompt_template = PromptTemplate(
 parser = StrOutputParser()
 
 # =========================================================
-# CREATE CHAIN
+# CREATE CHAIN (used by ambiguity judge)
 # =========================================================
 
 chain = (
@@ -363,6 +394,23 @@ chain = (
     | llm
     | parser
 )
+
+# =========================================================
+# STRUCTURED SQL GENERATION
+# =========================================================
+
+def generate_structured_sql(user_question):
+    """Generate SQL with structured output and validate."""
+
+    prompt_text = build_prompt(user_question)
+
+    response = structured_llm.invoke(prompt_text)
+
+    is_valid, validation_msg = validate_sql_syntax(
+        response.sql_query
+    )
+
+    return response, is_valid, validation_msg
 
 # =========================================================
 # MAIN LOOP
@@ -389,13 +437,114 @@ while True:
         ))
         continue
 
-    final_prompt = build_prompt(
-        user_question
+    response, is_valid, validation_msg = (
+        generate_structured_sql(user_question)
     )
 
-    sql_output = chain.invoke({
-        "prompt": final_prompt
-    })
+    # ── Guardrail Validation ────────────────────
+    guardrail_result = guardrail.validate(
+        response.sql_query,
+        db_path="database/college_2.sqlite",
+    )
 
-    print("\nGenerated SQL:\n")
-    print(sql_output)
+    if not guardrail_result.allowed:
+        print("\n" + "=" * 55)
+        print("  🚫 QUERY BLOCKED BY GUARDRAILS")
+        print("=" * 55)
+        print(f"\n📝 Original Query:\n{response.sql_query}")
+        print("\n⛔ Violations:")
+        for v in guardrail_result.violations:
+            print(f"   • {v}")
+        print("\n" + "=" * 55)
+        continue
+
+    # Use the guardrail-modified SQL (may have LIMIT)
+    safe_sql = guardrail_result.sql
+
+    # ── Display Results ─────────────────────────
+    print("\n" + "=" * 55)
+    print("  STRUCTURED SQL RESPONSE")
+    print("=" * 55)
+
+    print(f"\n📝 SQL Query:\n{safe_sql}")
+
+    if safe_sql != response.sql_query:
+        print(
+            "\n🔒 Guardrail: LIMIT clause was "
+            "automatically appended."
+        )
+
+    print(f"\n💬 Explanation:\n{response.explanation}")
+
+    print(
+        f"\n🎯 Confidence Score: "
+        f"{response.confidence_score:.0%}"
+    )
+
+    if response.confidence_score < 0.7:
+        print(
+            "   ⚠️  Low confidence — review the "
+            "query carefully before using."
+        )
+
+    print("\n📊 Tables Accessed:")
+    for table in response.tables_accessed:
+        print(f"   • {table}")
+
+    print("\n📋 Columns Accessed:")
+    for col in response.columns_accessed:
+        print(f"   • {col.table}.{col.column}")
+
+    # ── SQL Validation ──────────────────────────
+    print("\n🔍 SQL Validation:")
+    if is_valid:
+        print(f"   ✅ {validation_msg}")
+    else:
+        print(f"   ❌ {validation_msg}")
+
+    # ── Sandbox Execution ───────────────────────
+    print("\n" + "-" * 55)
+    print("  🔒 SANDBOX EXECUTION")
+    print("-" * 55)
+
+    sandbox_result = sandbox.execute(safe_sql)
+
+    print(f"\n🛡️  Protection: {sandbox_result.sandbox_info}")
+
+    if sandbox_result.success:
+        print(
+            f"\n✅ Query executed successfully "
+            f"({sandbox_result.row_count} row(s) returned)"
+        )
+
+        if sandbox_result.columns:
+            # ── Column Headers ──────────────────
+            header = " | ".join(
+                f"{col:<20}" for col in sandbox_result.columns
+            )
+            print(f"\n   {header}")
+            print(f"   {'-' * len(header)}")
+
+            # ── Data Rows ───────────────────────
+            display_limit = 20
+            for row in sandbox_result.rows[:display_limit]:
+                row_str = " | ".join(
+                    f"{str(val):<20}"
+                    for val in row
+                )
+                print(f"   {row_str}")
+
+            if sandbox_result.row_count > display_limit:
+                remaining = (
+                    sandbox_result.row_count - display_limit
+                )
+                print(
+                    f"\n   ... and {remaining} more row(s)"
+                )
+    else:
+        print(
+            f"\n❌ Sandbox blocked execution: "
+            f"{sandbox_result.error}"
+        )
+
+    print("\n" + "=" * 55)
