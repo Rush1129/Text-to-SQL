@@ -19,12 +19,12 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sandbox_executor import SandboxExecutor
+from guardrails.sandbox_executor import SandboxExecutor
 
 
-DB_PATH = "database/college_2.sqlite"
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "college_2.sqlite"))
 
 
 def test_select_works():

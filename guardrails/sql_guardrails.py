@@ -20,7 +20,7 @@ from datetime import datetime
 import sqlparse
 from pydantic import BaseModel, Field
 
-from guardrail_config import GuardrailConfig
+from .guardrail_config import GuardrailConfig
 
 
 # =========================================================

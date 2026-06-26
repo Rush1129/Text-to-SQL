@@ -7,6 +7,7 @@ Each rule can be independently enabled/disabled, and
 thresholds are fully configurable.
 """
 
+import os
 from pydantic import BaseModel, Field
 
 
@@ -95,6 +96,8 @@ class GuardrailConfig(BaseModel):
 
     # ── Logging ─────────────────────────────────────
     log_file: str = Field(
-        default="guardrail_blocked.log",
+        default=os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "guardrail_blocked.log")
+        ),
         description="Path to the guardrail log file.",
     )

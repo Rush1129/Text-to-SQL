@@ -2,3 +2,5 @@
 .venv/
 note.txt
 chroma_db/
+notes/
+*.log

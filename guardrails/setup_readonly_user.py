@@ -27,13 +27,18 @@ import sqlite3
 import stat
 import sys
 
+# Force UTF-8 output on Windows
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 
 # =========================================================
 # CONFIGURATION
 # =========================================================
 
-SOURCE_DB = "database/college_2.sqlite"
-READONLY_DB = "database/college_2_readonly.sqlite"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+SOURCE_DB = os.path.join(PROJECT_ROOT, "database", "college_2.sqlite")
+READONLY_DB = os.path.join(PROJECT_ROOT, "database", "college_2_readonly.sqlite")
 
 
 # =========================================================
@@ -67,6 +72,13 @@ def create_readonly_copy(
 
     print(f"\n📂 Source: {source}")
     print(f"📂 Target: {destination}")
+
+    # ── Remove write protection on existing file if present ──
+    if os.path.exists(destination):
+        try:
+            os.chmod(destination, stat.S_IWRITE)
+        except OSError:
+            pass
 
     # ── Copy the database ───────────────────────────
     try:
@@ -243,31 +255,31 @@ def print_summary():
             "Layer 1: SQL Guardrails",
             "Blocks DDL, DML writes, deep subqueries, "
             "and expensive scans BEFORE execution.",
-            "sql_guardrails.py",
+            "guardrails/sql_guardrails.py",
         ),
         (
             "Layer 2: Read-Only Connection",
             "SQLite URI parameter ?mode=ro prevents "
             "any filesystem-level writes.",
-            "sandbox_executor.py",
+            "guardrails/sandbox_executor.py",
         ),
         (
             "Layer 3: PRAGMA query_only",
             "Connection-level setting that makes SQLite "
             "reject any write operation.",
-            "sandbox_executor.py",
+            "guardrails/sandbox_executor.py",
         ),
         (
             "Layer 4: Auto-Rollback",
             "Every transaction is rolled back in a "
             "finally block, even on success.",
-            "sandbox_executor.py",
+            "guardrails/sandbox_executor.py",
         ),
         (
             "Layer 5: Read-Only File Permissions",
             "OS-level file permissions prevent any "
             "process from writing to the DB.",
-            "setup_readonly_user.py",
+            "guardrails/setup_readonly_user.py",
         ),
     ]
 

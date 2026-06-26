@@ -10,10 +10,10 @@ import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
 sys.stdout.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sql_guardrails import SQLGuardrail
-from guardrail_config import GuardrailConfig
+from guardrails.sql_guardrails import SQLGuardrail
+from guardrails.guardrail_config import GuardrailConfig
 
 guardrail = SQLGuardrail()
 
@@ -86,7 +86,7 @@ strict_config = GuardrailConfig(max_scan_rows=5)
 strict_guardrail = SQLGuardrail(config=strict_config)
 result = strict_guardrail.validate(
     "SELECT * FROM student",
-    db_path="database/college_2.sqlite",
+    db_path=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "college_2.sqlite")),
 )
 if not result.allowed:
     print(f"  Full scan BLOCKED: {PASS}")
@@ -105,7 +105,7 @@ print(f"  DDL with block_ddl=False: {status}")
 # -- Check log file --------------------------------------
 print("\n[Test 8] Log file check")
 try:
-    with open("guardrail_blocked.log", "r") as f:
+    with open(guardrail.config.log_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
     print(f"  Log entries found: {len(lines)} {PASS}")
     for line in lines[-3:]:

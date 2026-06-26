@@ -13,7 +13,8 @@ load_dotenv()
 # DATABASE CONNECTION
 # ---------------------------------------------------
 
-db_path = "database/college_2.sqlite"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+db_path = os.path.join(PROJECT_ROOT, "database", "college_2.sqlite")
 
 engine = create_engine(f"sqlite:///{db_path}")
 
@@ -167,9 +168,10 @@ print("\n" + json.dumps(schema, indent=4))
 # SAVE SCHEMA TO JSON FILE
 # ---------------------------------------------------
 
-os.makedirs("outputs", exist_ok=True)
+outputs_dir = os.path.join(PROJECT_ROOT, "outputs")
+os.makedirs(outputs_dir, exist_ok=True)
 
-with open("outputs/schema.json", "w") as f:
+with open(os.path.join(outputs_dir, "schema.json"), "w") as f:
 
     json.dump(schema, f, indent=4)
 
@@ -232,7 +234,7 @@ Relationships:
 # ---------------------------------------------------
 
 with open(
-    "outputs/retrieval_documents.json",
+    os.path.join(outputs_dir, "retrieval_documents.json"),
     "w"
 ) as f:
 
@@ -253,7 +255,7 @@ print(
 print("\nCreating ChromaDB vector embeddings...")
 
 chroma_client = chromadb.PersistentClient(
-    path="./chroma_db"
+    path=os.path.join(PROJECT_ROOT, "chroma_db")
 )
 
 # Delete existing collection if it exists

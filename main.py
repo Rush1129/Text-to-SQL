@@ -4,12 +4,11 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-from structured_models import (
+from models import (
     StructuredSQLResponse,
     validate_sql_syntax,
 )
-from sql_guardrails import SQLGuardrail
-from sandbox_executor import SandboxExecutor
+from guardrails import SQLGuardrail, SandboxExecutor
 
 load_dotenv()
 # =========================================================

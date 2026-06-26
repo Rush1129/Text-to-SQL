@@ -24,13 +24,13 @@ Our Text-to-SQL system generates SQL from natural language. Even with guardrails
        │
        ▼
   ┌─────────────┐
-  │  Guardrails  │  ← Layer 1: Pattern-based blocking (sql_guardrails.py)
+  │  Guardrails  │  ← Layer 1: Pattern-based blocking (guardrails/sql_guardrails.py)
   │  (software)  │     Catches known bad patterns BEFORE execution
   └──────┬──────┘
          │ Query passed guardrails
          ▼
   ┌─────────────┐
-  │   Sandbox    │  ← Layer 2: Execution-time protection (sandbox_executor.py)
+  │   Sandbox    │  ← Layer 2: Execution-time protection (guardrails/sandbox_executor.py)
   │  (runtime)   │     Even if guardrails miss it, the DB engine blocks it
   └──────┬──────┘
          │ Results only
@@ -118,7 +118,7 @@ finally:
 
 ### 4. Read-Only File Permissions (OS-Level)
 
-**What:** The `setup_readonly_user.py` script creates a copy of the database with
+**What:** The `guardrails/setup_readonly_user.py` script creates a copy of the database with
 OS-level read-only permissions (`chmod 444`).
 
 **Why we chose it:**
@@ -141,7 +141,7 @@ of what SQL they send or what connection mode they use.
 - Industry standard for read-only workloads
 
 **SQLite limitation:** SQLite has no user/role system, so we simulate it with the
-layers above. The `setup_readonly_user.py` file includes SQL templates for PostgreSQL
+layers above. The `guardrails/setup_readonly_user.py` file includes SQL templates for PostgreSQL
 and MySQL to make migration straightforward.
 
 ---
