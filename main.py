@@ -512,34 +512,77 @@ while True:
 
     if sandbox_result.success:
         print(
-            f"\n✅ Query executed successfully "
-            f"({sandbox_result.row_count} row(s) returned)"
+            f"\n✅ Query executed in "
+            f"{sandbox_result.execution_time * 1000:.2f} ms "
+            f"— {sandbox_result.row_count} row(s) returned"
         )
 
-        if sandbox_result.columns:
-            # ── Column Headers ──────────────────
-            header = " | ".join(
-                f"{col:<20}" for col in sandbox_result.columns
-            )
-            print(f"\n   {header}")
-            print(f"   {'-' * len(header)}")
+        # ── EXPLAIN QUERY PLAN ───────────────────
+        if sandbox_result.explain_plan:
+            print("\n📐 EXPLAIN QUERY PLAN:")
+            for step in sandbox_result.explain_plan:
+                print(f"   [{step['id']}] {step['detail']}")
 
-            # ── Data Rows ───────────────────────
+        # ── DataFrame Preview ────────────────────
+        if (
+            sandbox_result.dataframe is not None
+            and not sandbox_result.dataframe.empty
+        ):
+            df = sandbox_result.dataframe
+
+            # Cap console display to 20 rows
             display_limit = 20
-            for row in sandbox_result.rows[:display_limit]:
+            df_display = df.head(display_limit)
+
+            # Build aligned column headers
+            col_widths = [
+                max(len(str(c)), max(
+                    (len(str(v)) for v in df_display[c]),
+                    default=0
+                ))
+                for c in df_display.columns
+            ]
+
+            header = " | ".join(
+                f"{str(c):<{w}}"
+                for c, w in zip(df_display.columns, col_widths)
+            )
+            separator = "-" * len(header)
+
+            print(f"\n   {header}")
+            print(f"   {separator}")
+
+            for _, row in df_display.iterrows():
                 row_str = " | ".join(
-                    f"{str(val):<20}"
-                    for val in row
+                    f"{str(v):<{w}}"
+                    for v, w in zip(row, col_widths)
                 )
                 print(f"   {row_str}")
 
-            if sandbox_result.row_count > display_limit:
+            # Row cap notice
+            if sandbox_result.row_count > sandbox.row_limit:
+                print(
+                    f"\n   ⚠️  Row cap applied: showing "
+                    f"{sandbox.row_limit} of "
+                    f"{sandbox_result.row_count} row(s). "
+                    f"Increase SandboxExecutor(row_limit=...) "
+                    f"to retrieve more."
+                )
+            elif sandbox_result.row_count > display_limit:
                 remaining = (
                     sandbox_result.row_count - display_limit
                 )
                 print(
-                    f"\n   ... and {remaining} more row(s)"
+                    f"\n   ... and {remaining} more row(s) "
+                    f"(use result.dataframe for full data)"
                 )
+
+        # ── Audit notice ─────────────────────────
+        print(
+            "\n📁 Execution audit written to: "
+            "guardrails/execution_audit.log"
+        )
+
     else:
         print(
             f"\n❌ Sandbox blocked execution: "
