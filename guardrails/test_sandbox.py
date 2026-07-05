@@ -3,16 +3,21 @@ Sandbox Executor Tests
 ======================
 
 Verifies that the three-layer protection stack works:
-  1. Read-only connection blocks writes
-  2. PRAGMA query_only blocks writes
+  1. PostgreSQL read-only role blocks writes
+  2. SET TRANSACTION READ ONLY blocks writes
   3. Auto-rollback prevents persistence
 
 Also tests that SELECT queries execute correctly.
+
+Requires PostgreSQL to be running and .env configured with:
+  PG_HOST, PG_PORT, PG_DB, PG_READONLY_USER, PG_READONLY_PASSWORD
 """
 
-import sqlite3
 import os
 import sys
+
+import psycopg2
+from dotenv import load_dotenv
 
 # Force UTF-8 output on Windows
 if sys.platform == "win32":
@@ -21,20 +26,21 @@ if sys.platform == "win32":
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from guardrails.sandbox_executor import SandboxExecutor
+load_dotenv()
 
+from guardrails.sandbox_executor import SandboxExecutor, build_dsn
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "college_2.sqlite"))
+DSN = build_dsn()  # reads from .env
 
 
 def test_select_works():
     """Test: Normal SELECT queries execute successfully."""
     print("\n[TEST 1] SELECT query executes correctly")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     result = sandbox.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' LIMIT 5;"
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' LIMIT 5;"
     )
 
     assert result.success, f"SELECT should succeed: {result.error}"
@@ -47,10 +53,10 @@ def test_select_works():
 
 
 def test_insert_blocked():
-    """Test: INSERT is blocked by the sandbox."""
+    """Test: INSERT is blocked by the read-only role."""
     print("\n[TEST 2] INSERT is blocked")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     result = sandbox.execute(
         "INSERT INTO classroom VALUES ('Test', 999, 50);"
     )
@@ -62,10 +68,10 @@ def test_insert_blocked():
 
 
 def test_drop_blocked():
-    """Test: DROP TABLE is blocked by the sandbox."""
+    """Test: DROP TABLE is blocked by the read-only role."""
     print("\n[TEST 3] DROP TABLE is blocked")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     result = sandbox.execute("DROP TABLE classroom;")
 
     assert not result.success, "DROP should be blocked"
@@ -75,10 +81,10 @@ def test_drop_blocked():
 
 
 def test_update_blocked():
-    """Test: UPDATE is blocked by the sandbox."""
+    """Test: UPDATE is blocked by the read-only role."""
     print("\n[TEST 4] UPDATE is blocked")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     result = sandbox.execute(
         "UPDATE classroom SET capacity = 999 "
         "WHERE building = 'Packard';"
@@ -91,10 +97,10 @@ def test_update_blocked():
 
 
 def test_delete_blocked():
-    """Test: DELETE is blocked by the sandbox."""
+    """Test: DELETE is blocked by the read-only role."""
     print("\n[TEST 5] DELETE is blocked")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     result = sandbox.execute(
         "DELETE FROM classroom WHERE building = 'Packard';"
     )
@@ -106,10 +112,10 @@ def test_delete_blocked():
 
 
 def test_create_table_blocked():
-    """Test: CREATE TABLE is blocked by the sandbox."""
+    """Test: CREATE TABLE is blocked by the read-only role."""
     print("\n[TEST 6] CREATE TABLE is blocked")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     result = sandbox.execute(
         "CREATE TABLE evil_table (id INTEGER);"
     )
@@ -124,47 +130,37 @@ def test_database_unchanged():
     """Test: Database content unchanged after all tests."""
     print("\n[TEST 7] Database remains unchanged")
 
-    # Get table count directly (bypassing sandbox)
-    conn = sqlite3.connect(
-        f"file:{DB_PATH}?mode=ro", uri=True
+    # Verify no evil_table was created (bypassing sandbox, using admin DSN)
+    admin_dsn = (
+        f"host={os.environ.get('PG_HOST', 'localhost')} "
+        f"port={os.environ.get('PG_PORT', '5432')} "
+        f"dbname={os.environ.get('PG_DB', 'college_2')} "
+        f"user={os.environ.get('PG_ADMIN_USER', 'postgres')} "
+        f"password={os.environ.get('PG_ADMIN_PASSWORD', '')}"
     )
+    conn = psycopg2.connect(admin_dsn)
+    conn.autocommit = True
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT COUNT(*) FROM sqlite_master "
-        "WHERE type='table';"
-    )
-    table_count = cursor.fetchone()[0]
-    conn.close()
-
-    # Verify no evil_table was created
-    conn = sqlite3.connect(
-        f"file:{DB_PATH}?mode=ro", uri=True
-    )
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='evil_table';"
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_name = 'evil_table';"
     )
     evil = cursor.fetchall()
     conn.close()
 
     assert len(evil) == 0, "evil_table should NOT exist"
-    print(f"   PASS -- {table_count} tables, "
-          f"no evil_table found")
+    print(f"   PASS -- No evil_table found in PostgreSQL")
 
 
 def test_verify_sandbox():
     """Test: Sandbox self-verification works."""
     print("\n[TEST 8] Sandbox self-verification")
 
-    sandbox = SandboxExecutor(DB_PATH)
+    sandbox = SandboxExecutor(dsn=DSN)
     results = sandbox.verify_sandbox()
 
-    assert results["readonly_connection"], (
-        "Read-only connection should block writes"
-    )
-    assert results["pragma_query_only"], (
-        "PRAGMA query_only should be active"
+    assert results["readonly_role"], (
+        "Read-only role should block writes"
     )
     assert results["rollback_works"], (
         "Rollback should work"
@@ -179,7 +175,7 @@ def test_verify_sandbox():
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  SANDBOX EXECUTOR TESTS")
+    print("  SANDBOX EXECUTOR TESTS (PostgreSQL)")
     print("=" * 55)
 
     tests = [

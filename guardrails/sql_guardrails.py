@@ -13,11 +13,12 @@ Rules (each independently configurable):
 """
 
 import logging
+import os
 import re
-import sqlite3
-from datetime import datetime
 
+import psycopg2
 import sqlparse
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 from .guardrail_config import GuardrailConfig
@@ -57,7 +58,7 @@ class SQLGuardrail:
     Usage::
 
         guardrail = SQLGuardrail()            # defaults
-        result = guardrail.validate(sql, db_path="db.sqlite")
+        result = guardrail.validate(sql, dsn="host=localhost ...")
         if not result.allowed:
             print(result.violations)
     """
@@ -270,77 +271,77 @@ class SQLGuardrail:
     def check_explain_scan(
         self,
         sql: str,
-        db_path: str | None = None,
+        dsn: str | None = None,
     ) -> str | None:
         """
-        Run EXPLAIN QUERY PLAN on the SQLite database
-        and inspect for full table scans. Block if
-        estimated scan rows exceed the threshold.
+        Run EXPLAIN on the PostgreSQL database and inspect
+        the plan for sequential scans (Seq Scan).
+        Block if the estimated scan rows exceed the threshold.
+
+        PostgreSQL EXPLAIN returns a single text column per row
+        (the query plan as formatted text).
         """
         if not self.config.block_expensive_scans:
             return None
 
-        if db_path is None:
+        if dsn is None:
             return None
 
         try:
-            conn = sqlite3.connect(
-                f"file:{db_path}?mode=ro",
-                uri=True,
-            )
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
             cursor = conn.cursor()
 
-            cursor.execute(
-                f"EXPLAIN QUERY PLAN {sql}"
-            )
+            cursor.execute(f"EXPLAIN {sql}")
             plan_rows = cursor.fetchall()
 
-            # Check for SCAN (full table scan) entries
-            # SQLite may output "SCAN TABLE x" or "SCAN x"
-            scan_tables = []
-            for row in plan_rows:
-                detail = str(row[-1]) if row else ""
-                detail_upper = detail.upper()
-                if "SCAN" in detail_upper and "SEARCH" not in detail_upper:
-                    # Match "SCAN TABLE name" or "SCAN name"
-                    match = re.search(
-                        r"SCAN(?:\s+TABLE)?\s+(\w+)",
-                        detail,
+            # Each row is (plan_line_text,)
+            # Look for "Seq Scan on <table>" lines and extract
+            # the estimated row count from "rows=N"
+            seq_scan_tables: list[str] = []
+            total_estimated_rows = 0
+
+            for (line,) in plan_rows:
+                line_upper = line.upper()
+                if "SEQ SCAN" in line_upper:
+                    # Extract table name: "Seq Scan on tablename"
+                    table_match = re.search(
+                        r"Seq Scan on (\w+)",
+                        line,
                         re.IGNORECASE,
                     )
                     table_name = (
-                        match.group(1) if match else "unknown"
+                        table_match.group(1)
+                        if table_match
+                        else "unknown"
                     )
-                    scan_tables.append(table_name)
+                    seq_scan_tables.append(table_name)
 
-            if not scan_tables:
-                conn.close()
-                return None
-
-            # Check row counts for scanned tables
-            total_scan_rows = 0
-            for table_name in scan_tables:
-                try:
-                    cursor.execute(
-                        f"SELECT COUNT(*) FROM [{table_name}]"
+                    # Extract estimated rows: "rows=N"
+                    rows_match = re.search(
+                        r"rows=(\d+)", line
                     )
-                    count = cursor.fetchone()[0]
-                    total_scan_rows += count
-                except sqlite3.OperationalError:
-                    pass  # Table might not exist
+                    if rows_match:
+                        total_estimated_rows += int(
+                            rows_match.group(1)
+                        )
 
             conn.close()
 
-            if total_scan_rows > self.config.max_scan_rows:
+            if not seq_scan_tables:
+                return None
+
+            if total_estimated_rows > self.config.max_scan_rows:
                 return (
                     f"EXPENSIVE_SCAN_BLOCKED: Query would "
-                    f"scan ~{total_scan_rows:,} rows across "
-                    f"table(s) {', '.join(scan_tables)}, "
+                    f"seq-scan ~{total_estimated_rows:,} rows "
+                    f"across table(s) "
+                    f"{', '.join(seq_scan_tables)}, "
                     f"exceeding the limit of "
                     f"{self.config.max_scan_rows:,}."
                 )
 
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             # If EXPLAIN itself fails, log but allow
             self._logger.warning(
                 "Rule: EXPLAIN_ERROR | Error: %s | Query: %s",
@@ -356,15 +357,15 @@ class SQLGuardrail:
     def validate(
         self,
         sql: str,
-        db_path: str | None = None,
+        dsn: str | None = None,
     ) -> GuardrailResult:
         """
         Run all guardrail checks in order.
 
         Args:
             sql: The SQL query to validate.
-            db_path: Optional path to SQLite database
-                     (needed for EXPLAIN check).
+            dsn: Optional psycopg2 DSN connection string
+                 (needed for EXPLAIN check).
 
         Returns:
             GuardrailResult with allowed status,
@@ -416,7 +417,7 @@ class SQLGuardrail:
 
         # ── 5. EXPLAIN Scan Check ───────────────────
         scan_violation = self.check_explain_scan(
-            current_sql, db_path
+            current_sql, dsn
         )
         if scan_violation:
             violations.append(scan_violation)

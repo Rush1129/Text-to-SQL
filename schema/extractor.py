@@ -14,9 +14,18 @@ load_dotenv()
 # ---------------------------------------------------
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-db_path = os.path.join(PROJECT_ROOT, "database", "college_2.sqlite")
 
-engine = create_engine(f"sqlite:///{db_path}")
+# PostgreSQL connection — reads from .env
+_pg_user     = os.environ.get("PG_ADMIN_USER",     "postgres")
+_pg_password = os.environ.get("PG_ADMIN_PASSWORD",  "")
+_pg_host     = os.environ.get("PG_HOST",             "localhost")
+_pg_port     = os.environ.get("PG_PORT",             "5432")
+_pg_db       = os.environ.get("PG_DB",               "college_2")
+
+engine = create_engine(
+    f"postgresql+psycopg2://{_pg_user}:{_pg_password}"
+    f"@{_pg_host}:{_pg_port}/{_pg_db}"
+)
 
 inspector = inspect(engine)
 

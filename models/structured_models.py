@@ -24,7 +24,7 @@ class StructuredSQLResponse(BaseModel):
     sql_query: str = Field(
         description=(
             "The generated SQL query. Must be valid "
-            "SQLite syntax."
+            "PostgreSQL syntax."
         )
     )
 

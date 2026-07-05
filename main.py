@@ -1,4 +1,5 @@
 import json
+import os
 import chromadb
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -9,6 +10,7 @@ from models import (
     validate_sql_syntax,
 )
 from guardrails import SQLGuardrail, SandboxExecutor
+from guardrails.sandbox_executor import build_dsn
 
 load_dotenv()
 # =========================================================
@@ -62,6 +64,12 @@ structured_llm = llm.with_structured_output(
 )
 
 # =========================================================
+# POSTGRESQL CONNECTION DSN
+# =========================================================
+
+PG_DSN = build_dsn()  # reads PG_HOST, PG_PORT, PG_DB, PG_READONLY_USER, PG_READONLY_PASSWORD from .env
+
+# =========================================================
 # GUARDRAIL MIDDLEWARE
 # =========================================================
 
@@ -72,7 +80,7 @@ guardrail = SQLGuardrail()  # uses default config
 # =========================================================
 
 sandbox = SandboxExecutor(
-    db_path="database/college_2.sqlite",
+    dsn=PG_DSN,
     readonly=True,
 )
 
@@ -341,19 +349,21 @@ def build_prompt(user_question):
     example_text = format_examples()
 
     prompt = f"""
-You are an expert SQLite SQL generator.
+You are an expert PostgreSQL SQL generator.
 
 Rules:
 1. Use ONLY tables and columns provided in the schema.
-2. Generate syntactically correct SQLite SQL.
-3. Use proper JOINS using the relationships provided.
-4. If the question is ambiguous, do not guess. The application will ask
+2. Generate syntactically correct PostgreSQL SQL.
+3. Use proper JOINs using the relationships provided.
+4. Do NOT use SQLite-specific syntax (e.g. no strftime, no AUTOINCREMENT).
+   Use PostgreSQL equivalents: TO_CHAR, SERIAL/GENERATED ALWAYS AS IDENTITY, etc.
+5. If the question is ambiguous, do not guess. The application will ask
    for clarification before this prompt is sent.
-5. For the confidence_score, rate your confidence from 0.0 to 1.0 that
+6. For the confidence_score, rate your confidence from 0.0 to 1.0 that
    the generated SQL correctly answers the user's question.
-6. In tables_accessed, list every table name referenced in the query.
-7. In columns_accessed, list every column with its table name.
-8. In explanation, provide a clear natural language description of what
+7. In tables_accessed, list every table name referenced in the query.
+8. In columns_accessed, list every column with its table name.
+9. In explanation, provide a clear natural language description of what
    the SQL query does.
 
 Database Schema:
@@ -443,7 +453,7 @@ while True:
     # ── Guardrail Validation ────────────────────
     guardrail_result = guardrail.validate(
         response.sql_query,
-        db_path="database/college_2.sqlite",
+        dsn=PG_DSN,
     )
 
     if not guardrail_result.allowed:
@@ -521,7 +531,7 @@ while True:
         if sandbox_result.explain_plan:
             print("\n📐 EXPLAIN QUERY PLAN:")
             for step in sandbox_result.explain_plan:
-                print(f"   [{step['id']}] {step['detail']}")
+                print(f"   {step['detail']}")
 
         # ── DataFrame Preview ────────────────────
         if (

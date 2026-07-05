@@ -3,484 +3,307 @@
         "columns": [
             {
                 "name": "s_ID",
-                "type": "VARCHAR(5)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "i_ID",
-                "type": "VARCHAR(5)",
+                "type": "TEXT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "s_ID"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "i_ID"
-                ],
-                "referred_table": "instructor",
-                "referred_columns": [
-                    "ID"
-                ]
-            },
-            {
-                "constrained_columns": [
-                    "s_ID"
-                ],
-                "referred_table": "student",
-                "referred_columns": [
-                    "ID"
-                ]
-            }
-        ],
-        "description": "This table records the advisor relationship between students and instructors, linking each student (s_ID) to their assigned advisor (i_ID). It serves to identify which instructor is responsible for guiding each student."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "This table stores advisor relationships, mapping student IDs (s_ID) to instructor IDs (i_ID) to identify which instructor advises each student."
     },
     "classroom": {
         "columns": [
             {
                 "name": "building",
-                "type": "VARCHAR(15)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "room_number",
-                "type": "VARCHAR(7)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "capacity",
-                "type": "NUMERIC(4, 0)",
+                "type": "BIGINT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "building",
-            "room_number"
-        ],
+        "primary_keys": [],
         "foreign_keys": [],
-        "description": "The classroom table records each classroom\u2019s location and seating capacity, identified by building and room number. It is used to track room availability and capacity for scheduling courses."
+        "description": "The classroom table records each classroom\u2019s building, room number, and capacity, providing a reference for room allocation and scheduling."
     },
     "course": {
         "columns": [
             {
                 "name": "course_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "title",
-                "type": "VARCHAR(50)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "dept_name",
-                "type": "VARCHAR(20)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "credits",
-                "type": "NUMERIC(2, 0)",
+                "type": "BIGINT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "course_id"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "dept_name"
-                ],
-                "referred_table": "department",
-                "referred_columns": [
-                    "dept_name"
-                ]
-            }
-        ],
-        "description": "The course table stores information about academic courses, including a unique course ID, title, department affiliation, and credit value. It is used to link courses to their respective departments and support course catalog and enrollment functions."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "The course table holds details about academic courses, including a unique identifier, title, department name, and credit value. It is used to provide course information for scheduling, registration, and reporting."
     },
     "department": {
         "columns": [
             {
                 "name": "dept_name",
-                "type": "VARCHAR(20)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "building",
-                "type": "VARCHAR(15)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "budget",
-                "type": "NUMERIC(12, 2)",
+                "type": "DOUBLE PRECISION",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "dept_name"
-        ],
+        "primary_keys": [],
         "foreign_keys": [],
-        "description": "The department table records each department\u2019s name, the building where it is located, and its allocated budget. It is used to track departmental resources and location within the organization."
+        "description": "The department table records details about each department, such as its name, building location, and budget. This information is used for budgeting, facility management, and reporting purposes."
     },
     "instructor": {
         "columns": [
             {
                 "name": "ID",
-                "type": "VARCHAR(5)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "name",
-                "type": "VARCHAR(20)",
-                "nullable": false
+                "type": "TEXT",
+                "nullable": true
             },
             {
                 "name": "dept_name",
-                "type": "VARCHAR(20)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "salary",
-                "type": "NUMERIC(8, 2)",
+                "type": "DOUBLE PRECISION",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "ID"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "dept_name"
-                ],
-                "referred_table": "department",
-                "referred_columns": [
-                    "dept_name"
-                ]
-            }
-        ],
-        "description": "The instructor table stores faculty member details such as ID, name, department affiliation, and salary. It is used to manage instructor records and link them to the department table."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "The instructor table holds data on university faculty members, recording each instructor\u2019s ID, name, department affiliation, and salary. It is used to manage and query instructor compensation and departmental assignments."
     },
     "prereq": {
         "columns": [
             {
                 "name": "course_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "prereq_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "course_id",
-            "prereq_id"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "course_id"
-                ],
-                "referred_table": "course",
-                "referred_columns": [
-                    "course_id"
-                ]
-            },
-            {
-                "constrained_columns": [
-                    "prereq_id"
-                ],
-                "referred_table": "course",
-                "referred_columns": [
-                    "course_id"
-                ]
-            }
-        ],
-        "description": "The prereq table records prerequisite relationships between courses, mapping each course to the courses that must be completed beforehand. Each row indicates that course_id requires prereq_id to be completed first."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "This table records prerequisite relationships between courses, mapping each course (course_id) to the courses that must be completed beforehand (prereq_id). It is used to enforce or display prerequisite chains in a curriculum."
     },
     "section": {
         "columns": [
             {
                 "name": "course_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "sec_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "semester",
-                "type": "VARCHAR(6)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "year",
-                "type": "NUMERIC(4, 0)",
+                "type": "BIGINT",
                 "nullable": true
             },
             {
                 "name": "building",
-                "type": "VARCHAR(15)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "room_number",
-                "type": "VARCHAR(7)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "time_slot_id",
-                "type": "VARCHAR(4)",
+                "type": "TEXT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "course_id",
-            "sec_id",
-            "semester",
-            "year"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "course_id"
-                ],
-                "referred_table": "course",
-                "referred_columns": [
-                    "course_id"
-                ]
-            },
-            {
-                "constrained_columns": [
-                    "building",
-                    "room_number"
-                ],
-                "referred_table": "classroom",
-                "referred_columns": [
-                    "building",
-                    "room_number"
-                ]
-            }
-        ],
-        "description": "The section table records individual offerings of courses, identified by course ID, section ID, semester, and year, and includes the building, room number, and time slot where the section meets. It links each section to its course and classroom for scheduling and enrollment purposes."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "This table stores details about each course section, including the course ID, section ID, semester, year, building, room number, and time slot. It is used to track where and when each section meets."
     },
     "student": {
         "columns": [
             {
                 "name": "ID",
-                "type": "VARCHAR(5)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "name",
-                "type": "VARCHAR(20)",
-                "nullable": false
+                "type": "TEXT",
+                "nullable": true
             },
             {
                 "name": "dept_name",
-                "type": "VARCHAR(20)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "tot_cred",
-                "type": "NUMERIC(3, 0)",
+                "type": "BIGINT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "ID"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "dept_name"
-                ],
-                "referred_table": "department",
-                "referred_columns": [
-                    "dept_name"
-                ]
-            }
-        ],
-        "description": "The student table stores individual student records, including a unique ID, name, department affiliation, and total credits earned. It serves to track academic progress and link each student to their respective department."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "The student table stores basic student information, including a unique identifier, name, department affiliation, and total earned credits. It is used to track student enrollment and academic progress."
     },
     "takes": {
         "columns": [
             {
                 "name": "ID",
-                "type": "VARCHAR(5)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "course_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "sec_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "semester",
-                "type": "VARCHAR(6)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "year",
-                "type": "NUMERIC(4, 0)",
+                "type": "BIGINT",
                 "nullable": true
             },
             {
                 "name": "grade",
-                "type": "VARCHAR(2)",
+                "type": "TEXT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "ID",
-            "course_id",
-            "sec_id",
-            "semester",
-            "year"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "course_id",
-                    "sec_id",
-                    "semester",
-                    "year"
-                ],
-                "referred_table": "section",
-                "referred_columns": [
-                    "course_id",
-                    "sec_id",
-                    "semester",
-                    "year"
-                ]
-            },
-            {
-                "constrained_columns": [
-                    "ID"
-                ],
-                "referred_table": "student",
-                "referred_columns": [
-                    "ID"
-                ]
-            }
-        ],
-        "description": "The takes table records student enrollments in specific course sections, storing the student ID, course and section identifiers, semester, year, and the grade earned. It links students to sections and tracks their academic performance."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "This table logs student course enrollments, capturing the student ID, course and section identifiers, the semester and year of the term, and the grade awarded. It serves to track academic progress and enrollment history."
     },
     "teaches": {
         "columns": [
             {
                 "name": "ID",
-                "type": "VARCHAR(5)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "course_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "sec_id",
-                "type": "VARCHAR(8)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "semester",
-                "type": "VARCHAR(6)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "year",
-                "type": "NUMERIC(4, 0)",
+                "type": "BIGINT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "ID",
-            "course_id",
-            "sec_id",
-            "semester",
-            "year"
-        ],
-        "foreign_keys": [
-            {
-                "constrained_columns": [
-                    "course_id",
-                    "sec_id",
-                    "semester",
-                    "year"
-                ],
-                "referred_table": "section",
-                "referred_columns": [
-                    "course_id",
-                    "sec_id",
-                    "semester",
-                    "year"
-                ]
-            },
-            {
-                "constrained_columns": [
-                    "ID"
-                ],
-                "referred_table": "instructor",
-                "referred_columns": [
-                    "ID"
-                ]
-            }
-        ],
-        "description": "The teaches table records which instructor (ID) is assigned to teach a specific course section (course_id, sec_id) during a particular semester and year. It links instructors to course sections, enabling tracking of teaching assignments and schedules."
+        "primary_keys": [],
+        "foreign_keys": [],
+        "description": "The teaches table records which instructor (ID) teaches which course (course_id) in a specific section (sec_id) during a given semester and year. It is used to track instructor assignments for course sections across semesters."
     },
     "time_slot": {
         "columns": [
             {
                 "name": "time_slot_id",
-                "type": "VARCHAR(4)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "day",
-                "type": "VARCHAR(1)",
+                "type": "TEXT",
                 "nullable": true
             },
             {
                 "name": "start_hr",
-                "type": "NUMERIC(2)",
+                "type": "BIGINT",
                 "nullable": true
             },
             {
                 "name": "start_min",
-                "type": "NUMERIC(2)",
+                "type": "BIGINT",
                 "nullable": true
             },
             {
                 "name": "end_hr",
-                "type": "NUMERIC(2)",
+                "type": "BIGINT",
                 "nullable": true
             },
             {
                 "name": "end_min",
-                "type": "NUMERIC(2)",
+                "type": "BIGINT",
                 "nullable": true
             }
         ],
-        "primary_keys": [
-            "time_slot_id",
-            "day",
-            "start_hr",
-            "start_min"
-        ],
+        "primary_keys": [],
         "foreign_keys": [],
-        "description": "The time_slot table defines discrete scheduling intervals, storing a unique slot ID, day of the week, and start/end times broken into hours and minutes. It serves as a reference for booking or availability windows in the application."
+        "description": "The time_slot table stores individual time slots, each defined by a day and start/end hour and minute. It is used to represent scheduled periods for appointments, classes, or resource bookings."
     }
 }

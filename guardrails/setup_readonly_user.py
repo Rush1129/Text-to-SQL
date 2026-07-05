@@ -1,120 +1,166 @@
 """
-Read-Only User Setup Script
-============================
+PostgreSQL Read-Only User Setup Script
+=======================================
 
-Creates a restricted read-only copy of the SQLite database
-and verifies that all protection layers are active.
+Creates and verifies a restricted read-only role in PostgreSQL
+for safe query execution by the Text-to-SQL system.
 
-SQLite does not have a native user/role system like
-PostgreSQL or MySQL. Instead, we achieve the "SELECT-only
-user" concept through three mechanisms:
+Unlike SQLite, PostgreSQL has a native user/role system.
+We achieve SELECT-only access through:
 
-  1. OS-level read-only file permissions on the DB copy
-  2. Connection-level ``?mode=ro`` URI parameter
-  3. ``PRAGMA query_only = ON`` at the connection level
-
-For production PostgreSQL/MySQL deployments, see the
-commented-out SQL templates at the bottom of this file.
+  1. A dedicated ``readonly_user`` role with only CONNECT + SELECT
+  2. The application connects exclusively as this role
+  3. SET TRANSACTION READ ONLY at the session level (defense-in-depth)
 
 Usage::
 
-    python setup_readonly_user.py
+    python guardrails/setup_readonly_user.py
+
+Requires the following environment variables (or .env file):
+    PG_HOST, PG_PORT, PG_DB,
+    PG_ADMIN_USER, PG_ADMIN_PASSWORD,
+    PG_READONLY_USER, PG_READONLY_PASSWORD
 """
 
 import os
-import shutil
-import sqlite3
-import stat
 import sys
+
+import psycopg2
+from dotenv import load_dotenv
 
 # Force UTF-8 output on Windows
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
-
-# =========================================================
-# CONFIGURATION
-# =========================================================
-
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-SOURCE_DB = os.path.join(PROJECT_ROOT, "database", "college_2.sqlite")
-READONLY_DB = os.path.join(PROJECT_ROOT, "database", "college_2_readonly.sqlite")
+load_dotenv()
 
 
 # =========================================================
-# CREATE READ-ONLY COPY
+# CONFIGURATION (from environment)
 # =========================================================
 
-def create_readonly_copy(
-    source: str = SOURCE_DB,
-    destination: str = READONLY_DB,
-) -> bool:
+PG_HOST             = os.environ.get("PG_HOST",             "localhost")
+PG_PORT             = os.environ.get("PG_PORT",             "5432")
+PG_DB               = os.environ.get("PG_DB",               "college_2")
+PG_ADMIN_USER       = os.environ.get("PG_ADMIN_USER",       "postgres")
+PG_ADMIN_PASSWORD   = os.environ.get("PG_ADMIN_PASSWORD",   "")
+PG_READONLY_USER    = os.environ.get("PG_READONLY_USER",    "readonly_user")
+PG_READONLY_PASSWORD = os.environ.get("PG_READONLY_PASSWORD", "")
+
+ADMIN_DSN = (
+    f"host={PG_HOST} port={PG_PORT} dbname={PG_DB} "
+    f"user={PG_ADMIN_USER} password={PG_ADMIN_PASSWORD}"
+)
+
+READONLY_DSN = (
+    f"host={PG_HOST} port={PG_PORT} dbname={PG_DB} "
+    f"user={PG_READONLY_USER} password={PG_READONLY_PASSWORD}"
+)
+
+
+# =========================================================
+# CREATE READ-ONLY ROLE
+# =========================================================
+
+def create_readonly_role() -> bool:
     """
-    Create a filesystem-level read-only copy of the
-    source database.
-
-    Steps:
-      1. Copy the source database file
-      2. Set OS-level read-only permissions
-      3. Verify the copy is valid
+    Connect as admin and create a read-only role with:
+      - LOGIN privilege
+      - CONNECT on the target database
+      - USAGE on the public schema
+      - SELECT on all existing and future tables
 
     Returns:
-        True if the copy was created successfully.
+        True if setup completed successfully.
     """
     print("=" * 55)
-    print("  READ-ONLY DATABASE SETUP")
+    print("  POSTGRESQL READ-ONLY ROLE SETUP")
     print("=" * 55)
 
-    # ── Validate source exists ──────────────────────
-    if not os.path.exists(source):
-        print(f"\n❌ Source database not found: {source}")
-        return False
+    print(f"\n📡 Connecting as admin ({PG_ADMIN_USER}) to '{PG_DB}'...")
 
-    print(f"\n📂 Source: {source}")
-    print(f"📂 Target: {destination}")
-
-    # ── Remove write protection on existing file if present ──
-    if os.path.exists(destination):
-        try:
-            os.chmod(destination, stat.S_IWRITE)
-        except OSError:
-            pass
-
-    # ── Copy the database ───────────────────────────
     try:
-        shutil.copy2(source, destination)
-        print("\n✅ Database copied successfully.")
-    except OSError as e:
-        print(f"\n❌ Failed to copy database: {e}")
-        return False
+        conn = psycopg2.connect(ADMIN_DSN)
+        conn.autocommit = True
+        cursor = conn.cursor()
 
-    # ── Set read-only permissions ───────────────────
-    try:
-        # Remove write permission for all users
-        os.chmod(
-            destination,
-            stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH,
+        # ── 1. Create role if not exists ────────────
+        print(f"\n🔧 Creating role '{PG_READONLY_USER}'...")
+        cursor.execute(f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT FROM pg_catalog.pg_roles
+                    WHERE rolname = '{PG_READONLY_USER}'
+                ) THEN
+                    CREATE ROLE {PG_READONLY_USER}
+                        WITH LOGIN
+                        PASSWORD '{PG_READONLY_PASSWORD}';
+                    RAISE NOTICE 'Role created.';
+                ELSE
+                    ALTER ROLE {PG_READONLY_USER}
+                        WITH LOGIN
+                        PASSWORD '{PG_READONLY_PASSWORD}';
+                    RAISE NOTICE 'Role already exists — password updated.';
+                END IF;
+            END
+            $$;
+        """)
+        print(f"   ✅ Role '{PG_READONLY_USER}' ready.")
+
+        # ── 2. Grant CONNECT on database ────────────
+        print(f"\n🔧 Granting CONNECT on database '{PG_DB}'...")
+        cursor.execute(
+            f"GRANT CONNECT ON DATABASE {PG_DB} "
+            f"TO {PG_READONLY_USER};"
         )
-        print("✅ Read-only file permissions applied.")
-    except OSError as e:
-        print(f"\n⚠️  Could not set read-only permissions: {e}")
-        print("   (The database copy still exists.)")
+        print("   ✅ CONNECT granted.")
 
-    return True
+        # ── 3. Grant USAGE on public schema ─────────
+        print("\n🔧 Granting USAGE on schema public...")
+        cursor.execute(
+            f"GRANT USAGE ON SCHEMA public TO {PG_READONLY_USER};"
+        )
+        print("   ✅ USAGE granted.")
+
+        # ── 4. Grant SELECT on all existing tables ──
+        print("\n🔧 Granting SELECT on all existing tables...")
+        cursor.execute(
+            f"GRANT SELECT ON ALL TABLES IN SCHEMA public "
+            f"TO {PG_READONLY_USER};"
+        )
+        print("   ✅ SELECT on existing tables granted.")
+
+        # ── 5. Grant SELECT on future tables ────────
+        print("\n🔧 Setting default privileges for future tables...")
+        cursor.execute(
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+            f"GRANT SELECT ON TABLES TO {PG_READONLY_USER};"
+        )
+        print("   ✅ Default privileges set.")
+
+        conn.close()
+        print("\n✅ Read-only role setup complete.")
+        return True
+
+    except psycopg2.Error as e:
+        print(f"\n❌ Setup failed: {e}")
+        return False
 
 
 # =========================================================
 # VERIFY PROTECTIONS
 # =========================================================
 
-def verify_protections(db_path: str = READONLY_DB) -> bool:
+def verify_protections() -> bool:
     """
-    Verify that all three protection layers are working.
+    Verify that all protection layers are working correctly.
 
     Tests:
-      1. Read-only connection blocks writes
-      2. PRAGMA query_only blocks writes
-      3. SELECT queries still work
+      1. Read-only role cannot CREATE tables
+      2. Read-only role cannot INSERT rows
+      3. Read-only role CAN run SELECT queries
+      4. SET TRANSACTION READ ONLY is enforceable
 
     Returns:
         True if all verifications pass.
@@ -125,63 +171,70 @@ def verify_protections(db_path: str = READONLY_DB) -> bool:
 
     all_passed = True
 
-    # ── Test 1: Read-only connection ────────────────
-    print("\n🔍 Test 1: Read-only connection mode")
+    # ── Test 1: CREATE is blocked ───────────────────
+    print(f"\n🔍 Test 1: CREATE TABLE blocked for '{PG_READONLY_USER}'")
     try:
-        conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True
-        )
+        conn = psycopg2.connect(READONLY_DSN)
+        conn.autocommit = False
         cursor = conn.cursor()
 
         try:
             cursor.execute(
-                "CREATE TABLE _test_write_ (id INTEGER);"
+                "CREATE TABLE _sandbox_test_ (id INTEGER);"
             )
-            print("   ❌ FAIL — Write was NOT blocked!")
+            print("   ❌ FAIL — CREATE was NOT blocked!")
             all_passed = False
-        except sqlite3.OperationalError as e:
-            print(f"   ✅ PASS — Write blocked: {e}")
+        except psycopg2.Error as e:
+            print(f"   ✅ PASS — CREATE blocked: {e!s:.80}")
+        finally:
+            conn.rollback()
+            conn.close()
 
-        conn.close()
+    except psycopg2.Error as e:
+        print(f"   ⚠️  Could not connect: {e}")
+        all_passed = False
 
-    except sqlite3.OperationalError as e:
-        print(f"   ✅ PASS — Connection refused: {e}")
-
-    # ── Test 2: PRAGMA query_only ───────────────────
-    print("\n🔍 Test 2: PRAGMA query_only = ON")
+    # ── Test 2: INSERT is blocked ───────────────────
+    print(f"\n🔍 Test 2: INSERT blocked for '{PG_READONLY_USER}'")
     try:
-        conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True
-        )
+        conn = psycopg2.connect(READONLY_DSN)
+        conn.autocommit = False
         cursor = conn.cursor()
-        cursor.execute("PRAGMA query_only = ON;")
+
+        # Get first table name to attempt insert
+        cursor.execute(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname='public' LIMIT 1;"
+        )
+        row = cursor.fetchone()
+        test_table = row[0] if row else "student"
 
         try:
             cursor.execute(
-                "INSERT INTO student VALUES (999, 'test');"
+                f"INSERT INTO {test_table} VALUES (999);"
             )
-            print("   ❌ FAIL — Write was NOT blocked!")
+            print("   ❌ FAIL — INSERT was NOT blocked!")
             all_passed = False
-        except sqlite3.OperationalError as e:
-            print(f"   ✅ PASS — Write blocked: {e}")
+        except psycopg2.Error as e:
+            print(f"   ✅ PASS — INSERT blocked: {e!s:.80}")
+        finally:
+            conn.rollback()
+            conn.close()
 
-        conn.close()
-
-    except sqlite3.Error as e:
-        print(f"   ⚠️  Could not test: {e}")
+    except psycopg2.Error as e:
+        print(f"   ⚠️  Could not connect: {e}")
 
     # ── Test 3: SELECT still works ──────────────────
-    print("\n🔍 Test 3: SELECT queries work normally")
+    print(f"\n🔍 Test 3: SELECT works for '{PG_READONLY_USER}'")
     try:
-        conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True
-        )
+        conn = psycopg2.connect(READONLY_DSN)
+        conn.autocommit = False
         cursor = conn.cursor()
-        cursor.execute("PRAGMA query_only = ON;")
+        cursor.execute("SET TRANSACTION READ ONLY;")
 
         cursor.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' LIMIT 5;"
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = 'public' LIMIT 5;"
         )
         tables = cursor.fetchall()
 
@@ -190,42 +243,36 @@ def verify_protections(db_path: str = READONLY_DB) -> bool:
             for t in tables:
                 print(f"      • {t[0]}")
         else:
-            print("   ⚠️  No tables found (database may be empty).")
+            print("   ⚠️  No tables found (schema may be empty).")
 
+        conn.rollback()
         conn.close()
 
-    except sqlite3.Error as e:
+    except psycopg2.Error as e:
         print(f"   ❌ FAIL — SELECT blocked: {e}")
         all_passed = False
 
-    # ── Test 4: Auto-rollback ───────────────────────
-    print("\n🔍 Test 4: Transaction rollback")
+    # ── Test 4: SET TRANSACTION READ ONLY ──────────
+    print("\n🔍 Test 4: SET TRANSACTION READ ONLY enforceable")
     try:
-        conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True
-        )
+        conn = psycopg2.connect(READONLY_DSN)
+        conn.autocommit = False
         cursor = conn.cursor()
-        cursor.execute("BEGIN;")
-        cursor.execute(
-            "SELECT COUNT(*) FROM sqlite_master;"
-        )
-        count_before = cursor.fetchone()[0]
-        conn.rollback()
+        cursor.execute("SET TRANSACTION READ ONLY;")
 
-        cursor.execute(
-            "SELECT COUNT(*) FROM sqlite_master;"
-        )
-        count_after = cursor.fetchone()[0]
-
-        if count_before == count_after:
-            print("   ✅ PASS — Rollback verified.")
-        else:
-            print("   ❌ FAIL — Data changed after rollback!")
+        try:
+            cursor.execute(
+                "CREATE TABLE _ro_test_ (id INTEGER);"
+            )
+            print("   ❌ FAIL — Write was NOT blocked!")
             all_passed = False
+        except psycopg2.Error:
+            print("   ✅ PASS — Write blocked by READ ONLY transaction.")
+        finally:
+            conn.rollback()
+            conn.close()
 
-        conn.close()
-
-    except sqlite3.Error as e:
+    except psycopg2.Error as e:
         print(f"   ⚠️  Could not test: {e}")
 
     # ── Summary ─────────────────────────────────────
@@ -258,15 +305,15 @@ def print_summary():
             "guardrails/sql_guardrails.py",
         ),
         (
-            "Layer 2: Read-Only Connection",
-            "SQLite URI parameter ?mode=ro prevents "
-            "any filesystem-level writes.",
-            "guardrails/sandbox_executor.py",
+            "Layer 2: PostgreSQL Read-Only Role",
+            f"'{PG_READONLY_USER}' role has only SELECT "
+            "privilege — writes fail at the DB level.",
+            "guardrails/setup_readonly_user.py",
         ),
         (
-            "Layer 3: PRAGMA query_only",
-            "Connection-level setting that makes SQLite "
-            "reject any write operation.",
+            "Layer 3: SET TRANSACTION READ ONLY",
+            "Session-level setting that rejects any "
+            "write within the transaction.",
             "guardrails/sandbox_executor.py",
         ),
         (
@@ -274,12 +321,6 @@ def print_summary():
             "Every transaction is rolled back in a "
             "finally block, even on success.",
             "guardrails/sandbox_executor.py",
-        ),
-        (
-            "Layer 5: Read-Only File Permissions",
-            "OS-level file permissions prevent any "
-            "process from writing to the DB.",
-            "guardrails/setup_readonly_user.py",
         ),
     ]
 
@@ -296,9 +337,9 @@ def print_summary():
 # =========================================================
 
 if __name__ == "__main__":
-    print("\n🔧 Setting up read-only database user...\n")
+    print("\n🔧 Setting up PostgreSQL read-only role...\n")
 
-    success = create_readonly_copy()
+    success = create_readonly_role()
 
     if success:
         verify_protections()
@@ -308,43 +349,3 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print("\n✅ Setup complete!\n")
-
-
-# =========================================================
-# PRODUCTION DATABASE TEMPLATES (PostgreSQL / MySQL)
-# =========================================================
-#
-# When migrating from SQLite to a production database,
-# use these SQL templates to create a real SELECT-only
-# database user.
-#
-# ── PostgreSQL ──────────────────────────────────────────
-#
-#   -- Create a read-only role
-#   CREATE ROLE readonly_user WITH LOGIN PASSWORD 'secure_password';
-#
-#   -- Grant CONNECT to the database
-#   GRANT CONNECT ON DATABASE your_db TO readonly_user;
-#
-#   -- Grant USAGE on schemas
-#   GRANT USAGE ON SCHEMA public TO readonly_user;
-#
-#   -- Grant SELECT on all existing tables
-#   GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_user;
-#
-#   -- Grant SELECT on future tables automatically
-#   ALTER DEFAULT PRIVILEGES IN SCHEMA public
-#       GRANT SELECT ON TABLES TO readonly_user;
-#
-# ── MySQL ───────────────────────────────────────────────
-#
-#   -- Create a read-only user
-#   CREATE USER 'readonly_user'@'%' IDENTIFIED BY 'secure_password';
-#
-#   -- Grant SELECT-only permissions
-#   GRANT SELECT ON your_db.* TO 'readonly_user'@'%';
-#
-#   -- Apply changes
-#   FLUSH PRIVILEGES;
-#
-# =========================================================

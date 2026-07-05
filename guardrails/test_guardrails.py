@@ -6,6 +6,9 @@ Tests all 5 rules independently.
 import sys
 import os
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Fix Windows console encoding for Unicode
 os.environ["PYTHONIOENCODING"] = "utf-8"
 sys.stdout.reconfigure(encoding="utf-8")
@@ -14,6 +17,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from guardrails.sql_guardrails import SQLGuardrail
 from guardrails.guardrail_config import GuardrailConfig
+from guardrails.sandbox_executor import build_dsn
+
+DSN = build_dsn()  # reads PG_* vars from .env
 
 guardrail = SQLGuardrail()
 
@@ -80,13 +86,13 @@ print(f"  Depth 4 (should block): {status}")
 if result.violations:
     print(f"    Reason: {result.violations[0]}")
 
-# -- Test 6: EXPLAIN Scan (with real DB) -----------------
-print("\n[Test 6] EXPLAIN Scan Check (with college_2.sqlite)")
+# -- Test 6: EXPLAIN Scan (with real PostgreSQL DB) ------
+print("\n[Test 6] EXPLAIN Scan Check (with college_2 PostgreSQL DB)")
 strict_config = GuardrailConfig(max_scan_rows=5)
 strict_guardrail = SQLGuardrail(config=strict_config)
 result = strict_guardrail.validate(
     "SELECT * FROM student",
-    db_path=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "college_2.sqlite")),
+    dsn=DSN,
 )
 if not result.allowed:
     print(f"  Full scan BLOCKED: {PASS}")

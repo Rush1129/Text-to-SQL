@@ -6,14 +6,14 @@ Defense-in-depth execution layer for generated SQL queries.
 
 Every query is executed inside a three-layer protection stack:
 
-  1. ``?mode=ro``           – SQLite URI read-only connection
-  2. ``PRAGMA query_only``  – Connection-level write blocker
-  3. Explicit ``ROLLBACK``  – Always rolls back, even on success
+  1. Read-only PostgreSQL role  – enforced by DB-level GRANT privileges
+  2. Explicit ``ROLLBACK``      – always rolls back, even on success
+  3. ``SET TRANSACTION READ ONLY`` – connection-level read-only guard
 
 Beyond safety, every execution is *instrumented*:
 
   • Execution time measured with ``time.perf_counter()`` (sub-ms precision)
-  • ``EXPLAIN QUERY PLAN`` captured before the main query
+  • ``EXPLAIN`` captured before the main query
   • Results packaged into a ``pandas.DataFrame`` (rows capped at *row_limit*)
   • Every execution written to a structured audit log (JSON lines)
 
@@ -23,14 +23,45 @@ the database remains untouched.
 
 import json
 import logging
-import sqlite3
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 from pydantic import BaseModel, Field
+
+
+# =========================================================
+# DSN BUILDER
+# =========================================================
+
+def build_dsn(
+    host: str | None = None,
+    port: str | None = None,
+    dbname: str | None = None,
+    user: str | None = None,
+    password: str | None = None,
+) -> str:
+    """
+    Build a psycopg2 DSN string from keyword args or env vars.
+
+    Environment variables used as fallbacks:
+        PG_HOST, PG_PORT, PG_DB, PG_READONLY_USER, PG_READONLY_PASSWORD
+    """
+    host     = host     or os.environ.get("PG_HOST",             "localhost")
+    port     = port     or os.environ.get("PG_PORT",             "5432")
+    dbname   = dbname   or os.environ.get("PG_DB",               "college_2")
+    user     = user     or os.environ.get("PG_READONLY_USER",    "readonly_user")
+    password = password or os.environ.get("PG_READONLY_PASSWORD", "")
+
+    return (
+        f"host={host} port={port} dbname={dbname} "
+        f"user={user} password={password}"
+    )
 
 
 # =========================================================
@@ -88,7 +119,7 @@ class SandboxResult(BaseModel):
     row_count       – Actual number of rows returned (before cap).
     dataframe       – Results as a pandas DataFrame (or None on error).
     execution_time  – Wall-clock seconds the query took (perf_counter).
-    explain_plan    – List of rows from EXPLAIN QUERY PLAN.
+    explain_plan    – List of rows from EXPLAIN.
     error           – Error message if execution failed.
     sandbox_info    – Human-readable protection summary.
     """
@@ -124,8 +155,8 @@ class SandboxResult(BaseModel):
     explain_plan: list[dict] = Field(
         default_factory=list,
         description=(
-            "Rows from EXPLAIN QUERY PLAN, each as a dict "
-            "with keys: id, parent, notused, detail."
+            "Rows from EXPLAIN, each as a dict "
+            "with key: detail (plan text line)."
         ),
     )
     error: Optional[str] = Field(
@@ -147,22 +178,27 @@ class SandboxResult(BaseModel):
 
 class SandboxExecutor:
     """
-    Executes SQL queries inside a read-only sandbox.
+    Executes SQL queries inside a read-only PostgreSQL sandbox.
 
     Three independent protection layers ensure the database
     is never modified, even if the guardrail layer misses
     a dangerous query.
 
+    Protection layers:
+      1. Read-only PostgreSQL role (DB-level GRANT enforcement)
+      2. SET TRANSACTION READ ONLY (session-level guard)
+      3. Explicit ROLLBACK in finally block
+
     Every execution is also *instrumented*:
 
     * Precise wall-clock timing via ``time.perf_counter()``
-    * ``EXPLAIN QUERY PLAN`` captured before the main query
+    * ``EXPLAIN`` captured before the main query
     * Results packaged into a ``pandas.DataFrame``
     * Structured JSON-line audit log written for every call
 
     Usage::
 
-        sandbox = SandboxExecutor("database/college_2.sqlite")
+        sandbox = SandboxExecutor(dsn="host=localhost dbname=college_2 ...")
         result  = sandbox.execute("SELECT * FROM student LIMIT 5")
 
         if result.success:
@@ -174,28 +210,31 @@ class SandboxExecutor:
 
     # Human-readable label for the protection stack
     _PROTECTION_SUMMARY = (
-        "Read-only connection (?mode=ro) + "
-        "PRAGMA query_only = ON + "
+        "PostgreSQL read-only role + "
+        "SET TRANSACTION READ ONLY + "
         "auto-rollback transaction"
     )
 
     def __init__(
         self,
-        db_path: str,
+        dsn: str | None = None,
         readonly: bool = True,
         row_limit: int = 500,
     ):
         """
         Args:
-            db_path:   Path to the SQLite database file.
-            readonly:  Whether to enforce read-only mode.
+            dsn:       psycopg2 DSN connection string. If None,
+                       built automatically from env vars:
+                       PG_HOST, PG_PORT, PG_DB,
+                       PG_READONLY_USER, PG_READONLY_PASSWORD.
+            readonly:  Whether to enforce read-only transaction mode.
                        Defaults to True (always recommended).
             row_limit: Maximum rows to include in the result
                        DataFrame. Excess rows are silently
                        discarded (row_count still reflects
                        the true total). Defaults to 500.
         """
-        self.db_path = db_path
+        self.dsn = dsn or build_dsn()
         self.readonly = readonly
         self.row_limit = row_limit
 
@@ -206,14 +245,13 @@ class SandboxExecutor:
         Execute *sql* inside the read-only sandbox.
 
         Steps:
-          1. Open connection in read-only mode
-          2. Enable PRAGMA query_only
-          3. Begin explicit transaction
-          4. Capture EXPLAIN QUERY PLAN
-          5. Execute the query (timed)
-          6. Fetch and cap results → DataFrame
-          7. ROLLBACK (always, even on success)
-          8. Write structured audit record
+          1. Open connection using read-only PG role
+          2. Begin transaction with SET TRANSACTION READ ONLY
+          3. Capture EXPLAIN plan
+          4. Execute the query (timed)
+          5. Fetch and cap results → DataFrame
+          6. ROLLBACK (always, even on success)
+          7. Write structured audit record
 
         Returns:
             SandboxResult with columns, rows, DataFrame,
@@ -223,31 +261,28 @@ class SandboxExecutor:
         start_ts = datetime.now(timezone.utc).isoformat()
 
         try:
-            # ── Layer 1: Read-only connection ───────
+            # ── Layer 1: Read-only PG role connection ─
             conn = self._open_connection()
             cursor = conn.cursor()
 
-            # ── Layer 2: PRAGMA query_only ──────────
+            # ── Layer 2: Read-only transaction ────────
             if self.readonly:
-                cursor.execute("PRAGMA query_only = ON;")
-
-            # ── Layer 3: Explicit transaction ───────
-            cursor.execute("BEGIN;")
+                cursor.execute("SET TRANSACTION READ ONLY;")
 
             _logger.info(
                 "Executing query in sandbox: %s",
                 sql.replace("\n", " ").strip()[:120],
             )
 
-            # ── EXPLAIN QUERY PLAN ──────────────────
+            # ── EXPLAIN plan ──────────────────────────
             explain_plan = self._fetch_explain_plan(cursor, sql)
 
-            # ── Timed execution ─────────────────────
+            # ── Timed execution ───────────────────────
             t0 = time.perf_counter()
             cursor.execute(sql)
             execution_time = time.perf_counter() - t0
 
-            # ── Fetch results ───────────────────────
+            # ── Fetch results ─────────────────────────
             columns = (
                 [desc[0] for desc in cursor.description]
                 if cursor.description
@@ -290,8 +325,8 @@ class SandboxExecutor:
                 sandbox_info=self._PROTECTION_SUMMARY,
             )
 
-        except sqlite3.Error as e:
-            error_msg = str(e)
+        except psycopg2.Error as e:
+            error_msg = str(e).strip()
             execution_time = 0.0
             explain_plan = []
 
@@ -314,17 +349,17 @@ class SandboxExecutor:
             )
 
         finally:
-            # ── Always rollback ─────────────────────
+            # ── Layer 3: Always rollback ───────────────
             if conn:
                 try:
                     conn.rollback()
                     _logger.info("Transaction rolled back.")
-                except sqlite3.Error:
+                except psycopg2.Error:
                     pass  # Connection may already be closed
                 finally:
                     conn.close()
 
-        # ── Audit log ───────────────────────────────
+        # ── Audit log ──────────────────────────────────
         self._write_audit(sql, result, start_ts)
 
         return result
@@ -332,30 +367,25 @@ class SandboxExecutor:
     # ── EXPLAIN Helper ──────────────────────────────
 
     def _fetch_explain_plan(
-        self, cursor: sqlite3.Cursor, sql: str
+        self, cursor, sql: str
     ) -> list[dict]:
         """
-        Run ``EXPLAIN QUERY PLAN <sql>`` and return each row
-        as a dict with keys: id, parent, notused, detail.
+        Run ``EXPLAIN <sql>`` and return each line of the plan
+        as a dict with key: detail.
 
-        Failures are silently swallowed so the main query
-        always proceeds.
+        PostgreSQL EXPLAIN returns a single text column per row.
+        Failures are silently swallowed so the main query always proceeds.
         """
         try:
-            cursor.execute(f"EXPLAIN QUERY PLAN {sql}")
+            cursor.execute(f"EXPLAIN {sql}")
             rows = cursor.fetchall()
             return [
-                {
-                    "id":      row[0],
-                    "parent":  row[1],
-                    "notused": row[2],
-                    "detail":  row[3],
-                }
+                {"detail": row[0]}
                 for row in rows
             ]
-        except sqlite3.Error as exc:
+        except psycopg2.Error as exc:
             _logger.debug(
-                "EXPLAIN QUERY PLAN failed (non-fatal): %s", exc
+                "EXPLAIN failed (non-fatal): %s", exc
             )
             return []
 
@@ -397,36 +427,32 @@ class SandboxExecutor:
 
     # ── Connection Helper ───────────────────────────
 
-    def _open_connection(self) -> sqlite3.Connection:
+    def _open_connection(self) -> psycopg2.extensions.connection:
         """
-        Open a SQLite connection.
+        Open a psycopg2 connection using the configured DSN.
 
-        When ``self.readonly`` is True, the connection is
-        opened via URI with ``?mode=ro``, which prevents
-        the database file from being modified at the
-        filesystem level.
+        The connection is opened using the read-only PG role
+        (defined in PG_READONLY_USER env var), which has only
+        SELECT privileges at the database level.
         """
-        if self.readonly:
-            uri = f"file:{self.db_path}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True)
-        else:
-            conn = sqlite3.connect(self.db_path)
-
+        conn = psycopg2.connect(self.dsn)
+        # Disable autocommit so we control the transaction
+        conn.autocommit = False
         return conn
 
     # ── Verification Helper ─────────────────────────
 
     def verify_sandbox(self) -> dict:
         """
-        Run a self-test to verify all three protection
-        layers are active. Returns a dict with results.
+        Run a self-test to verify all protection layers are active.
+        Returns a dict with results.
 
         Useful for startup health checks.
         """
         results = {
-            "readonly_connection": False,
-            "pragma_query_only":   False,
-            "rollback_works":      False,
+            "readonly_role":        False,
+            "transaction_readonly": False,
+            "rollback_works":       False,
         }
 
         conn = None
@@ -434,33 +460,38 @@ class SandboxExecutor:
             conn = self._open_connection()
             cursor = conn.cursor()
 
-            # Test read-only connection
+            # Test 1: Read-only role blocks writes
             try:
                 cursor.execute(
                     "CREATE TABLE _sandbox_test_ (id INTEGER);"
                 )
-            except sqlite3.OperationalError:
-                results["readonly_connection"] = True
+                conn.rollback()
+            except psycopg2.Error:
+                results["readonly_role"] = True
+                conn.rollback()
 
-            # Test PRAGMA query_only
-            if self.readonly:
-                cursor.execute("PRAGMA query_only = ON;")
-                cursor.execute("PRAGMA query_only;")
-                pragma_val = cursor.fetchone()
-                if pragma_val and pragma_val[0] == 1:
-                    results["pragma_query_only"] = True
+            # Test 2: SET TRANSACTION READ ONLY blocks writes
+            try:
+                cursor.execute("SET TRANSACTION READ ONLY;")
+                cursor.execute(
+                    "INSERT INTO information_schema.tables "
+                    "VALUES ('x','x','x');"
+                )
+            except psycopg2.Error:
+                results["transaction_readonly"] = True
+                conn.rollback()
 
-            # Test rollback
+            # Test 3: Rollback works
             conn.rollback()
             results["rollback_works"] = True
 
-        except sqlite3.Error:
+        except psycopg2.Error:
             pass
         finally:
             if conn:
                 try:
                     conn.close()
-                except sqlite3.Error:
+                except psycopg2.Error:
                     pass
 
         return results
