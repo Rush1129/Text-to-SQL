@@ -11,6 +11,7 @@ from models import (
 )
 from guardrails import SQLGuardrail, SandboxExecutor
 from guardrails.sandbox_executor import build_dsn
+from verification import SQLVerifier
 
 load_dotenv()
 # =========================================================
@@ -82,6 +83,15 @@ guardrail = SQLGuardrail()  # uses default config
 sandbox = SandboxExecutor(
     dsn=PG_DSN,
     readonly=True,
+)
+
+# =========================================================
+# SQL-TO-QUESTION VERIFIER
+# =========================================================
+
+verifier = SQLVerifier(
+    llm=llm,
+    flag_threshold=0.65,   # flag when alignment < 65%
 )
 
 # =========================================================
@@ -469,6 +479,46 @@ while True:
 
     # Use the guardrail-modified SQL (may have LIMIT)
     safe_sql = guardrail_result.sql
+
+    # ── SQL-to-Question Verification ────────────
+    print("\n" + "-" * 55)
+    print("  🔁 SQL-TO-QUESTION VERIFICATION")
+    print("-" * 55)
+
+    verif = verifier.verify(user_question, safe_sql)
+
+    print(f"\n❓ Original Question:")
+    print(f"   {user_question}")
+
+    print(f"\n🔄 Back-Translated Question:")
+    print(f"   {verif.back_translated_question}")
+
+    # Score bar: filled blocks proportional to alignment
+    _bar_filled = round(verif.alignment_score * 10)
+    _bar = "█" * _bar_filled + "░" * (10 - _bar_filled)
+    print(
+        f"\n📊 Alignment Score: "
+        f"{verif.alignment_score:.0%}  [{verif.alignment_label}]  "
+        f"|{_bar}|"
+    )
+
+    if verif.judge_reason:
+        print(f"   💬 Judge: {verif.judge_reason}")
+
+    if verif.is_flagged:
+        print(
+            "\n   ⚠️  LOW ALIGNMENT — SQL may not answer the intended question."
+        )
+        if verif.flag_reason:
+            # Print abbreviated reason (first 120 chars)
+            short = verif.flag_reason[:120] + (
+                "..." if len(verif.flag_reason) > 120 else ""
+            )
+            print(f"   📌 {short}")
+    else:
+        print("\n   ✅ Alignment is acceptable.")
+
+    print("-" * 55)
 
     # ── Display Results ─────────────────────────
     print("\n" + "=" * 55)
