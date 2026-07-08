@@ -1,754 +1,280 @@
-import json
-import os
-import chromadb
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_groq import ChatGroq
-from dotenv import load_dotenv
-from models import (
-    StructuredSQLResponse,
-    validate_sql_syntax,
-)
-from guardrails import SQLGuardrail, SandboxExecutor
-from guardrails.sandbox_executor import build_dsn
-from verification import (
-    SQLVerifier,
-    ResultSanityChecker,
-    ConfidenceScorer,
-)
-
-load_dotenv()
-# =========================================================
-# LOAD SCHEMA
-# =========================================================
-
-with open("outputs/schema.json", "r") as f:
-    schema = json.load(f)
-
-# =========================================================
-# LOAD CHROMADB COLLECTION
-# =========================================================
-
-chroma_client = chromadb.PersistentClient(
-    path="./chroma_db"
-)
-
-collection = chroma_client.get_collection(
-    name="table_schemas"
-)
-
-# =========================================================
-# LOAD FEW-SHOT EXAMPLES
-# =========================================================
-
-try:
-    with open("examples/examples.json", "r") as f:
-        examples = json.load(f)
-
-except FileNotFoundError:
-    examples = []
-
-# =========================================================
-# GROQ LLM SETUP
-# =========================================================
-
-# Set your GROQ API key before running:
-# export GROQ_API_KEY="your_api_key"
-
-llm = ChatGroq(
-    model="openai/gpt-oss-20b",
-    temperature=0
-)
-
-# =========================================================
-# STRUCTURED OUTPUT LLM (for SQL generation)
-# =========================================================
-
-structured_llm = llm.with_structured_output(
-    StructuredSQLResponse
-)
-
-# =========================================================
-# POSTGRESQL CONNECTION DSN
-# =========================================================
-
-PG_DSN = build_dsn()  # reads PG_HOST, PG_PORT, PG_DB, PG_READONLY_USER, PG_READONLY_PASSWORD from .env
-
-# =========================================================
-# GUARDRAIL MIDDLEWARE
-# =========================================================
-
-guardrail = SQLGuardrail()  # uses default config
-
-# =========================================================
-# SANDBOX EXECUTOR
-# =========================================================
-
-sandbox = SandboxExecutor(
-    dsn=PG_DSN,
-    readonly=True,
-)
-
-# =========================================================
-# SQL-TO-QUESTION VERIFIER
-# =========================================================
-
-verifier = SQLVerifier(
-    llm=llm,
-    flag_threshold=0.65,   # flag when alignment < 65%
-)
-
-# =========================================================
-# RESULT SANITY CHECKER
-# =========================================================
-
-sanity_checker = ResultSanityChecker(
-    null_pct_threshold=0.40,
-    overflow_limit=1e9,
-    date_min_year=1900,
-    date_max_year=2100,
-)
-
-# =========================================================
-# CONFIDENCE SCORER
-# =========================================================
-
-conf_scorer = ConfidenceScorer(schema=schema)
-
-# =========================================================
-# RELEVANT TABLE SELECTION
-# =========================================================
-
-def get_relevant_tables(question, top_k=3):
-
-    results = collection.query(
-        query_texts=[question],
-        n_results=top_k
-    )
-
-    # Extract table names from metadata
-    relevant_tables = [
-        m["table_name"]
-        for m in results["metadatas"][0]
-    ]
-
-    return relevant_tables
-
-# =========================================================
-# FORMAT SCHEMA
-# =========================================================
-
-def format_schema(relevant_tables):
-
-    formatted_schema = ""
-
-    for table in relevant_tables:
-
-        table_info = schema[table]
-
-        formatted_schema += f"\nTable: {table}\n"
-
-        formatted_schema += "Columns:\n"
-
-        for col in table_info["columns"]:
-
-            formatted_schema += (
-                f"- {col['name']} "
-                f"({col['type']})\n"
-            )
-
-        if table_info["primary_keys"]:
-
-            formatted_schema += "Primary Keys:\n"
-
-            for pk in table_info["primary_keys"]:
-
-                formatted_schema += f"- {pk}\n"
-
-    return formatted_schema
-
-# =========================================================
-# FORMAT RELATIONSHIPS
-# =========================================================
-
-def format_relationships(relevant_tables):
-
-    relationships = "\nRelationships:\n"
-
-    for table in relevant_tables:
-
-        table_info = schema[table]
-
-        for fk in table_info["foreign_keys"]:
-
-            constrained = fk["constrained_columns"]
-
-            referred_table = fk["referred_table"]
-
-            referred_cols = fk["referred_columns"]
-
-            relationships += (
-                f"{table}.{constrained} "
-                f"→ "
-                f"{referred_table}.{referred_cols}\n"
-            )
-
-    return relationships
-
-# =========================================================
-# FORMAT FEW-SHOT EXAMPLES
-# =========================================================
-
-def format_examples():
-
-    if not examples:
-        return ""
-
-    formatted = "\nExamples:\n"
-
-    for ex in examples:
-
-        formatted += (
-            f"\nQuestion: {ex['question']}\n"
-        )
-
-        formatted += (
-            f"SQL: {ex['sql']}\n"
-        )
-
-    return formatted
-
-# =========================================================
-# AMBIGUITY JUDGE
-# =========================================================
-
-def extract_json_object(text):
-
-    cleaned = text.strip()
-
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-
-    if start == -1 or end == -1:
-        raise ValueError(
-            f"LLM did not return a JSON object: {text}"
-        )
-
-    return json.loads(cleaned[start:end + 1])
-
-
-def build_ambiguity_prompt(user_question):
-
-    all_tables = list(schema.keys())
-
-    schema_text = format_schema(
-        all_tables
-    )
-
-    relationship_text = format_relationships(
-        all_tables
-    )
-
-    example_text = format_examples()
-
-    prompt = f"""
-You are an ambiguity judge for a text-to-SQL system.
-
-Your job is to decide whether the user's question has multiple plausible
-SQL interpretations given the database schema, relationships, and examples.
-
-Return ONLY valid JSON. Do not wrap it in markdown.
-
-Use this exact JSON shape:
-{{
-  "is_ambiguous": true,
-  "clarification_request": {{
-    "type": "clarification_request",
-    "reason": "ambiguous_user_question",
-    "ambiguous_term": "short phrase that caused ambiguity",
-    "message": "Ask the user to clarify the intended interpretation.",
-    "interpretations": [
-      {{
-        "label": "snake_case_label",
-        "description": "What this interpretation means.",
-        "example_query": "A clarified natural language question."
-      }}
-    ],
-    "original_question": "The original user question."
-  }}
-}}
-
-If the question is not ambiguous, return:
-{{
-  "is_ambiguous": false,
-  "clarification_request": null
-}}
-
-Guidelines:
-1. Mark ambiguous only when two or more materially different SQL queries
-   are reasonable for the same question.
-2. Do not mark broad but clear requests as ambiguous.
-3. Do not guess business definitions. For example, if a metric could mean
-   gross, net, active, enrolled, attempted, completed, current, or historical,
-   ask for clarification.
-4. List each plausible interpretation with an example clarified query.
-5. Use only concepts supported by the schema and examples, unless the user's
-   wording introduces an external business metric that needs clarification.
-
-Database Schema:
-{schema_text}
-
-{relationship_text}
-
-{example_text}
-
-User Question:
-{user_question}
+"""
+app.py
+======
+FastAPI REST API for the Text-to-SQL pipeline.
+
+Endpoints
+---------
+  POST  /v1/query    – Run a natural-language question through the pipeline
+  GET   /v1/schema   – Return the database schema
+  GET   /v1/history  – Return past queries for a session
+
+Run with:
+    uvicorn main:app --reload
+OpenAPI docs available at:
+    http://localhost:8000/docs
 """
 
-    return prompt
+from __future__ import annotations
+
+import logging
+import uuid
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+import pipeline as pl  # shared pipeline objects + run_query()
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logger = logging.getLogger("api")
+
+# =========================================================
+# APP SETUP
+# =========================================================
+
+app = FastAPI(
+    title="Text-to-SQL API",
+    description=(
+        "Natural-language to SQL query engine with guardrails, "
+        "back-translation verification, sanity checking, and "
+        "composite confidence scoring."
+    ),
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================================================
+# SESSION HISTORY  (in-memory; cleared on restart)
+# =========================================================
+
+# Maps session_id -> list of result dicts (newest last)
+_history: dict[str, list[dict]] = defaultdict(list)
+
+# =========================================================
+# REQUEST / RESPONSE MODELS
+# =========================================================
 
 
-def detect_ambiguity(user_question):
+class QueryRequest(BaseModel):
+    """Request body for POST /v1/query."""
 
-    ambiguity_prompt = build_ambiguity_prompt(
-        user_question
+    question: str = Field(
+        ...,
+        min_length=3,
+        description="Natural-language question to convert to SQL.",
+        examples=["How many students are enrolled in each department?"],
+    )
+    session_id: str = Field(
+        default="default",
+        description=(
+            "Session identifier used to group queries in GET /v1/history. "
+            "Defaults to 'default'."
+        ),
     )
 
-    judge_output = chain.invoke({
-        "prompt": ambiguity_prompt
-    })
+
+class QueryResponse(BaseModel):
+    """Full response from POST /v1/query."""
+
+    # mirrors QueryResult fields — validated by Pydantic for the response
+    question:                 str
+    sql:                      str
+    safe_sql:                 str
+    explanation:              str
+    tables_accessed:          list[str]
+    columns_accessed:         list[dict]
+    execution_results:        list[dict]
+    row_count:                int
+    execution_time_ms:        float
+    execution_error:          Optional[str]
+    sql_valid:                bool
+    validation_message:       str
+    guardrail_allowed:        bool
+    guardrail_warnings:       list[str]
+    guardrail_limit_applied:  bool
+    back_translated_question: str
+    alignment_score:          float
+    alignment_label:          str
+    alignment_flagged:        bool
+    alignment_flag_reason:    Optional[str]
+    judge_reason:             Optional[str]
+    sanity_anomalies:         list[dict]
+    sanity_pass_rate:         float
+    sanity_summary:           str
+    confidence:               dict
+    needs_clarification:      bool
+    clarification_request:    Optional[dict]
+    error:                    Optional[str]
+    # API-level metadata
+    session_id:               str
+    timestamp:                str
+
+
+class SchemaTableInfo(BaseModel):
+    """Schema info for a single table (returned by GET /v1/schema)."""
+    columns:      list[dict]
+    primary_keys: list[str]
+    foreign_keys: list[dict]
+
+
+class SchemaResponse(BaseModel):
+    """Full schema returned by GET /v1/schema."""
+    table_count: int
+    tables: dict[str, SchemaTableInfo]
+
+
+class HistoryItem(BaseModel):
+    """One past query entry returned by GET /v1/history."""
+    timestamp:   str
+    session_id:  str
+    question:    str
+    sql:         str
+    safe_sql:    str
+    row_count:   int
+    confidence:  dict
+    error:       Optional[str]
+
+
+class HistoryResponse(BaseModel):
+    """Response from GET /v1/history."""
+    session_id:   str
+    total_queries: int
+    queries:      list[dict]   # full QueryResponse dicts, newest first
+
+
+# =========================================================
+# ENDPOINTS
+# =========================================================
+
+@app.post(
+    "/v1/query",
+    response_model=QueryResponse,
+    summary="Run a natural-language query",
+    tags=["Query"],
+)
+async def post_query(request: QueryRequest) -> QueryResponse:
+    """
+    Accept a natural-language question, run it through the full
+    Text-to-SQL pipeline, and return:
+
+    - The generated SQL and guardrail-safe SQL
+    - Execution results as a list of row dicts
+    - Composite confidence score with per-signal breakdown
+    - Back-translation alignment score and label
+    - Sanity check anomalies (if any)
+    - Guardrail warnings (if any)
+    - A `clarification_request` if the question is ambiguous
+
+    If the query is blocked by guardrails, `guardrail_allowed` is
+    `false` and `guardrail_warnings` lists the violations.
+    """
+    logger.info(
+        "POST /v1/query | session=%r | question=%r",
+        request.session_id, request.question,
+    )
 
     try:
-        parsed_output = extract_json_object(
-            judge_output
-        )
-    except (json.JSONDecodeError, ValueError):
-        return {
-            "type": "clarification_request",
-            "reason": "ambiguity_judge_invalid_response",
-            "ambiguous_term": "unknown",
-            "message": (
-                "I could not reliably determine whether the question is "
-                "ambiguous. Please rephrase with the exact metric, entity, "
-                "time period, and filters you want."
-            ),
-            "interpretations": [
-                {
-                    "label": "rephrased_question",
-                    "description": (
-                        "A more specific version of the question with the "
-                        "intended meaning made explicit."
-                    ),
-                    "example_query": (
-                        "Count enrolled students by department for Fall 2010."
-                    ),
-                }
-            ],
-            "original_question": user_question,
-        }
+        result = pl.run_query(request.question)
+    except Exception as exc:
+        logger.exception("run_query raised an unexpected exception: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
-    if parsed_output.get("is_ambiguous"):
-        return parsed_output.get("clarification_request")
+    ts  = datetime.now(timezone.utc).isoformat()
+    raw = result.to_dict()
+    raw["session_id"] = request.session_id
+    raw["timestamp"]  = ts
 
-    return None
-
-# =========================================================
-# BUILD FINAL PROMPT
-# =========================================================
-
-def build_prompt(user_question):
-
-    relevant_tables = get_relevant_tables(
-        user_question
+    # Append to session history
+    _history[request.session_id].append(raw)
+    logger.info(
+        "Session %r now has %d entries.",
+        request.session_id, len(_history[request.session_id]),
     )
 
-    schema_text = format_schema(
-        relevant_tables
-    )
+    return QueryResponse(**raw)
 
-    relationship_text = format_relationships(
-        relevant_tables
-    )
 
-    example_text = format_examples()
-
-    prompt = f"""
-You are an expert PostgreSQL SQL generator.
-
-Rules:
-1. Use ONLY tables and columns provided in the schema.
-2. Generate syntactically correct PostgreSQL SQL.
-3. Use proper JOINs using the relationships provided.
-4. Do NOT use SQLite-specific syntax (e.g. no strftime, no AUTOINCREMENT).
-   Use PostgreSQL equivalents: TO_CHAR, SERIAL/GENERATED ALWAYS AS IDENTITY, etc.
-5. If the question is ambiguous, do not guess. The application will ask
-   for clarification before this prompt is sent.
-6. For the confidence_score, rate your confidence from 0.0 to 1.0 that
-   the generated SQL correctly answers the user's question.
-7. In tables_accessed, list every table name referenced in the query.
-8. In columns_accessed, list every column with its table name.
-9. In explanation, provide a clear natural language description of what
-   the SQL query does.
-
-Database Schema:
-{schema_text}
-
-{relationship_text}
-
-{example_text}
-
-User Question:
-{user_question}
-"""
-
-    return prompt
-
-# =========================================================
-# PROMPT TEMPLATE
-# =========================================================
-
-prompt_template = PromptTemplate(
-    input_variables=["prompt"],
-    template="{prompt}"
+@app.get(
+    "/v1/schema",
+    response_model=SchemaResponse,
+    summary="Get the database schema",
+    tags=["Schema"],
 )
+async def get_schema() -> SchemaResponse:
+    """
+    Return the full database schema loaded from `outputs/schema.json`.
 
-# =========================================================
-# OUTPUT PARSER
-# =========================================================
+    Each table entry includes:
+    - `columns`      – list of `{name, type}` dicts
+    - `primary_keys` – list of column names that form the PK
+    - `foreign_keys` – list of FK constraint dicts
+    """
+    logger.info("GET /v1/schema")
+    tables = {}
+    for table_name, info in pl.schema.items():
+        tables[table_name] = SchemaTableInfo(
+            columns=info.get("columns", []),
+            primary_keys=info.get("primary_keys", []),
+            foreign_keys=info.get("foreign_keys", []),
+        )
+    return SchemaResponse(table_count=len(tables), tables=tables)
 
-parser = StrOutputParser()
 
-# =========================================================
-# CREATE CHAIN (used by ambiguity judge)
-# =========================================================
-
-chain = (
-    prompt_template
-    | llm
-    | parser
+@app.get(
+    "/v1/history",
+    response_model=HistoryResponse,
+    summary="Get past queries for a session",
+    tags=["History"],
 )
+async def get_history(
+    session_id: str = Query(
+        default="default",
+        description="Session ID to retrieve history for.",
+    ),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=500,
+        description="Maximum number of entries to return (newest first).",
+    ),
+) -> HistoryResponse:
+    """
+    Return past queries and their full results for the given session.
+
+    Results are returned newest-first.  History is in-memory and is
+    cleared when the server restarts.
+    """
+    logger.info("GET /v1/history | session=%r | limit=%d", session_id, limit)
+    entries = _history.get(session_id, [])
+    # Newest first, capped at limit
+    ordered = list(reversed(entries))[:limit]
+    return HistoryResponse(
+        session_id=session_id,
+        total_queries=len(entries),
+        queries=ordered,
+    )
+
 
 # =========================================================
-# STRUCTURED SQL GENERATION
+# HEALTH CHECK
 # =========================================================
 
-def generate_structured_sql(user_question):
-    """Generate SQL with structured output and validate."""
-
-    prompt_text = build_prompt(user_question)
-
-    response = structured_llm.invoke(prompt_text)
-
-    is_valid, validation_msg = validate_sql_syntax(
-        response.sql_query
-    )
-
-    return response, is_valid, validation_msg
-
-# =========================================================
-# MAIN LOOP
-# =========================================================
-
-while True:
-
-    user_question = input(
-        "\nEnter your question (or type exit): "
-    )
-
-    if user_question.lower() == "exit":
-        break
-
-    clarification_request = detect_ambiguity(
-        user_question
-    )
-
-    if clarification_request:
-        print("\nClarification Required:\n")
-        print(json.dumps(
-            clarification_request,
-            indent=2
-        ))
-        continue
-
-    response, is_valid, validation_msg = (
-        generate_structured_sql(user_question)
-    )
-
-    # ── Guardrail Validation ────────────────────
-    guardrail_result = guardrail.validate(
-        response.sql_query,
-        dsn=PG_DSN,
-    )
-
-    if not guardrail_result.allowed:
-        print("\n" + "=" * 55)
-        print("  🚫 QUERY BLOCKED BY GUARDRAILS")
-        print("=" * 55)
-        print(f"\n📝 Original Query:\n{response.sql_query}")
-        print("\n⛔ Violations:")
-        for v in guardrail_result.violations:
-            print(f"   • {v}")
-        print("\n" + "=" * 55)
-        continue
-
-    # Use the guardrail-modified SQL (may have LIMIT)
-    safe_sql = guardrail_result.sql
-
-    # ── SQL-to-Question Verification ────────────
-    print("\n" + "-" * 55)
-    print("  🔁 SQL-TO-QUESTION VERIFICATION")
-    print("-" * 55)
-
-    verif = verifier.verify(user_question, safe_sql)
-
-    print(f"\n❓ Original Question:")
-    print(f"   {user_question}")
-
-    print(f"\n🔄 Back-Translated Question:")
-    print(f"   {verif.back_translated_question}")
-
-    # Score bar: filled blocks proportional to alignment
-    _bar_filled = round(verif.alignment_score * 10)
-    _bar = "█" * _bar_filled + "░" * (10 - _bar_filled)
-    print(
-        f"\n📊 Alignment Score: "
-        f"{verif.alignment_score:.0%}  [{verif.alignment_label}]  "
-        f"|{_bar}|"
-    )
-
-    if verif.judge_reason:
-        print(f"   💬 Judge: {verif.judge_reason}")
-
-    if verif.is_flagged:
-        print(
-            "\n   ⚠️  LOW ALIGNMENT — SQL may not answer the intended question."
-        )
-        if verif.flag_reason:
-            # Print abbreviated reason (first 120 chars)
-            short = verif.flag_reason[:120] + (
-                "..." if len(verif.flag_reason) > 120 else ""
-            )
-            print(f"   📌 {short}")
-    else:
-        print("\n   ✅ Alignment is acceptable.")
-
-    print("-" * 55)
-
-    # ── Display Results ─────────────────────────
-    print("\n" + "=" * 55)
-    print("  STRUCTURED SQL RESPONSE")
-    print("=" * 55)
-
-    print(f"\n📝 SQL Query:\n{safe_sql}")
-
-    if safe_sql != response.sql_query:
-        print(
-            "\n🔒 Guardrail: LIMIT clause was "
-            "automatically appended."
-        )
-
-    print(f"\n💬 Explanation:\n{response.explanation}")
-
-    print(
-        f"\n🎯 Confidence Score: "
-        f"{response.confidence_score:.0%}"
-    )
-
-    if response.confidence_score < 0.7:
-        print(
-            "   ⚠️  Low confidence — review the "
-            "query carefully before using."
-        )
-
-    print("\n📊 Tables Accessed:")
-    for table in response.tables_accessed:
-        print(f"   • {table}")
-
-    print("\n📋 Columns Accessed:")
-    for col in response.columns_accessed:
-        print(f"   • {col.table}.{col.column}")
-
-    # ── SQL Validation ──────────────────────────
-    print("\n🔍 SQL Validation:")
-    if is_valid:
-        print(f"   ✅ {validation_msg}")
-    else:
-        print(f"   ❌ {validation_msg}")
-
-    # ── Sandbox Execution ───────────────────────
-    print("\n" + "-" * 55)
-    print("  🔒 SANDBOX EXECUTION")
-    print("-" * 55)
-
-    sandbox_result = sandbox.execute(safe_sql)
-
-    print(f"\n🛡️  Protection: {sandbox_result.sandbox_info}")
-
-    if sandbox_result.success:
-        print(
-            f"\n✅ Query executed in "
-            f"{sandbox_result.execution_time * 1000:.2f} ms "
-            f"— {sandbox_result.row_count} row(s) returned"
-        )
-
-        # ── EXPLAIN QUERY PLAN ───────────────────
-        if sandbox_result.explain_plan:
-            print("\n📐 EXPLAIN QUERY PLAN:")
-            for step in sandbox_result.explain_plan:
-                print(f"   {step['detail']}")
-
-        # ── DataFrame Preview ────────────────────
-        if (
-            sandbox_result.dataframe is not None
-            and not sandbox_result.dataframe.empty
-        ):
-            df = sandbox_result.dataframe
-
-            # Cap console display to 20 rows
-            display_limit = 20
-            df_display = df.head(display_limit)
-
-            # Build aligned column headers
-            col_widths = [
-                max(len(str(c)), max(
-                    (len(str(v)) for v in df_display[c]),
-                    default=0
-                ))
-                for c in df_display.columns
-            ]
-
-            header = " | ".join(
-                f"{str(c):<{w}}"
-                for c, w in zip(df_display.columns, col_widths)
-            )
-            separator = "-" * len(header)
-
-            print(f"\n   {header}")
-            print(f"   {separator}")
-
-            for _, row in df_display.iterrows():
-                row_str = " | ".join(
-                    f"{str(v):<{w}}"
-                    for v, w in zip(row, col_widths)
-                )
-                print(f"   {row_str}")
-
-            # Row cap notice
-            if sandbox_result.row_count > sandbox.row_limit:
-                print(
-                    f"\n   ⚠️  Row cap applied: showing "
-                    f"{sandbox.row_limit} of "
-                    f"{sandbox_result.row_count} row(s). "
-                    f"Increase SandboxExecutor(row_limit=...) "
-                    f"to retrieve more."
-                )
-            elif sandbox_result.row_count > display_limit:
-                remaining = (
-                    sandbox_result.row_count - display_limit
-                )
-                print(
-                    f"\n   ... and {remaining} more row(s) "
-                    f"(use result.dataframe for full data)"
-                )
-
-        # ── Result Sanity Check ──────────────────
-        sanity = sanity_checker.check(
-            df=sandbox_result.dataframe,
-            row_count=sandbox_result.row_count,
-            sql=safe_sql,
-        )
-
-        # ── Audit notice ─────────────────────────
-        print(
-            "\n📁 Execution audit written to: "
-            "guardrails/execution_audit.log"
-        )
-
-    else:
-        print(
-            f"\n❌ Sandbox blocked execution: "
-            f"{sandbox_result.error}"
-        )
-        # Produce a neutral sanity report so confidence scorer
-        # still has something to work with
-        sanity = sanity_checker.check(df=None, row_count=0, sql=safe_sql)
-
-    # ── Confidence Scoring ───────────────────────
-    conf = conf_scorer.score(
-        syntax_valid=is_valid,
-        alignment_score=verif.alignment_score,
-        sanity_pass_rate=sanity.pass_rate,
-        tables_accessed=response.tables_accessed,
-    )
-
-    # ── Composite Confidence Banner ──────────────
-    _W = 55
-    _grade_icons = {"A": "🟢", "B": "🟡", "C": "🟠", "D": "🔴"}
-    _icon = _grade_icons.get(conf.grade, "⚪")
-
-    def _signal_bar(raw: float, weight: float, max_pts: int) -> str:
-        pts = round(raw * max_pts)
-        return f"{pts}/{max_pts}  {'█' * pts}{'░' * (max_pts - pts)}"
-
-    print("\n" + "╔" + "═" * (_W - 2) + "╗")
-    _banner_title = (
-        f"  {_icon} COMPOSITE CONFIDENCE: "
-        f"{conf.composite_score:.0%}  "
-        f"[{conf.grade}]  {conf.grade_label}"
-    )
-    print(f"║{_banner_title:<{_W - 2}}║")
-    print("╠" + "═" * (_W - 2) + "╣")
-
-    # Syntax
-    _syn_raw = conf.signal_breakdown['syntax_validity']
-    _syn_pts = "✅ 20/20" if _syn_raw == 1.0 else "❌  0/20"
-    _syn_line = f"  Syntax validity      {_syn_pts}"
-    print(f"║{_syn_line:<{_W - 2}}║")
-
-    # Back-translation
-    _aln_raw = conf.signal_breakdown['back_translation']
-    _aln_wgt = round(_aln_raw * 35)
-    _aln_icon = "✅" if _aln_raw >= 0.65 else ("🟡" if _aln_raw >= 0.40 else "❌")
-    _aln_line = f"  Back-translation  {_aln_icon} {_aln_wgt}/35  ({_aln_raw:.0%} align.)"
-    print(f"║{_aln_line:<{_W - 2}}║")
-
-    # Sanity
-    _san_raw = conf.signal_breakdown['sanity_pass_rate']
-    _san_wgt = round(_san_raw * 30)
-    _san_icon = "✅" if _san_raw == 1.0 else ("🟡" if _san_raw >= 0.70 else "❌")
-    _san_desc = "all passed" if _san_raw == 1.0 else f"{len(sanity.anomalies)} issue(s)"
-    _san_line = f"  Sanity checks     {_san_icon} {_san_wgt}/30  ({_san_desc})"
-    print(f"║{_san_line:<{_W - 2}}║")
-
-    # Schema coverage
-    _sch_raw = conf.signal_breakdown['schema_coverage']
-    _sch_wgt = round(_sch_raw * 15)
-    _sch_icon = "✅" if _sch_raw == 1.0 else ("🟡" if _sch_raw >= 0.70 else "❌")
-    _sch_line = f"  Schema coverage   {_sch_icon} {_sch_wgt}/15  ({_sch_raw:.0%})"
-    print(f"║{_sch_line:<{_W - 2}}║")
-
-    print("╠" + "═" * (_W - 2) + "╣")
-    _verdict_line = f"  {conf.verdict[:_W - 5]}"
-    print(f"║{_verdict_line:<{_W - 2}}║")
-    print("╚" + "═" * (_W - 2) + "╝")
-
-    # ── Sanity Anomalies Detail ──────────────────
-    if sanity.anomalies:
-        print("\n" + "-" * _W)
-        print("  🔬 SANITY CHECK ANOMALIES")
-        print("-" * _W)
-        for anomaly in sanity.anomalies:
-            print(f"\n  {anomaly.icon()} [{anomaly.severity}] {anomaly.check_name}")
-            print(f"     {anomaly.message}")
-            if anomaly.affected_column:
-                print(f"     Column: {anomaly.affected_column}")
-        print("-" * _W)
-
-    print("\n" + "=" * _W)
+@app.get("/health", tags=["Meta"])
+async def health() -> dict:
+    """Simple liveness probe."""
+    return {"status": "ok", "schema_tables": len(pl.schema)}

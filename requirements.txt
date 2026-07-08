@@ -29,6 +29,9 @@ python-dotenv>=1.2.2
 groq>=0.37.1
 httpx>=0.28.1
 requests>=2.34.2
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20   # needed by FastAPI for form parsing
 
 # ── Utils ────────────────────────────────────────────────
 rich>=15.0.0
