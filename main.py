@@ -11,7 +11,11 @@ from models import (
 )
 from guardrails import SQLGuardrail, SandboxExecutor
 from guardrails.sandbox_executor import build_dsn
-from verification import SQLVerifier
+from verification import (
+    SQLVerifier,
+    ResultSanityChecker,
+    ConfidenceScorer,
+)
 
 load_dotenv()
 # =========================================================
@@ -93,6 +97,23 @@ verifier = SQLVerifier(
     llm=llm,
     flag_threshold=0.65,   # flag when alignment < 65%
 )
+
+# =========================================================
+# RESULT SANITY CHECKER
+# =========================================================
+
+sanity_checker = ResultSanityChecker(
+    null_pct_threshold=0.40,
+    overflow_limit=1e9,
+    date_min_year=1900,
+    date_max_year=2100,
+)
+
+# =========================================================
+# CONFIDENCE SCORER
+# =========================================================
+
+conf_scorer = ConfidenceScorer(schema=schema)
 
 # =========================================================
 # RELEVANT TABLE SELECTION
@@ -637,6 +658,13 @@ while True:
                     f"(use result.dataframe for full data)"
                 )
 
+        # ── Result Sanity Check ──────────────────
+        sanity = sanity_checker.check(
+            df=sandbox_result.dataframe,
+            row_count=sandbox_result.row_count,
+            sql=safe_sql,
+        )
+
         # ── Audit notice ─────────────────────────
         print(
             "\n📁 Execution audit written to: "
@@ -648,5 +676,79 @@ while True:
             f"\n❌ Sandbox blocked execution: "
             f"{sandbox_result.error}"
         )
+        # Produce a neutral sanity report so confidence scorer
+        # still has something to work with
+        sanity = sanity_checker.check(df=None, row_count=0, sql=safe_sql)
 
-    print("\n" + "=" * 55)
+    # ── Confidence Scoring ───────────────────────
+    conf = conf_scorer.score(
+        syntax_valid=is_valid,
+        alignment_score=verif.alignment_score,
+        sanity_pass_rate=sanity.pass_rate,
+        tables_accessed=response.tables_accessed,
+    )
+
+    # ── Composite Confidence Banner ──────────────
+    _W = 55
+    _grade_icons = {"A": "🟢", "B": "🟡", "C": "🟠", "D": "🔴"}
+    _icon = _grade_icons.get(conf.grade, "⚪")
+
+    def _signal_bar(raw: float, weight: float, max_pts: int) -> str:
+        pts = round(raw * max_pts)
+        return f"{pts}/{max_pts}  {'█' * pts}{'░' * (max_pts - pts)}"
+
+    print("\n" + "╔" + "═" * (_W - 2) + "╗")
+    _banner_title = (
+        f"  {_icon} COMPOSITE CONFIDENCE: "
+        f"{conf.composite_score:.0%}  "
+        f"[{conf.grade}]  {conf.grade_label}"
+    )
+    print(f"║{_banner_title:<{_W - 2}}║")
+    print("╠" + "═" * (_W - 2) + "╣")
+
+    # Syntax
+    _syn_raw = conf.signal_breakdown['syntax_validity']
+    _syn_pts = "✅ 20/20" if _syn_raw == 1.0 else "❌  0/20"
+    _syn_line = f"  Syntax validity      {_syn_pts}"
+    print(f"║{_syn_line:<{_W - 2}}║")
+
+    # Back-translation
+    _aln_raw = conf.signal_breakdown['back_translation']
+    _aln_wgt = round(_aln_raw * 35)
+    _aln_icon = "✅" if _aln_raw >= 0.65 else ("🟡" if _aln_raw >= 0.40 else "❌")
+    _aln_line = f"  Back-translation  {_aln_icon} {_aln_wgt}/35  ({_aln_raw:.0%} align.)"
+    print(f"║{_aln_line:<{_W - 2}}║")
+
+    # Sanity
+    _san_raw = conf.signal_breakdown['sanity_pass_rate']
+    _san_wgt = round(_san_raw * 30)
+    _san_icon = "✅" if _san_raw == 1.0 else ("🟡" if _san_raw >= 0.70 else "❌")
+    _san_desc = "all passed" if _san_raw == 1.0 else f"{len(sanity.anomalies)} issue(s)"
+    _san_line = f"  Sanity checks     {_san_icon} {_san_wgt}/30  ({_san_desc})"
+    print(f"║{_san_line:<{_W - 2}}║")
+
+    # Schema coverage
+    _sch_raw = conf.signal_breakdown['schema_coverage']
+    _sch_wgt = round(_sch_raw * 15)
+    _sch_icon = "✅" if _sch_raw == 1.0 else ("🟡" if _sch_raw >= 0.70 else "❌")
+    _sch_line = f"  Schema coverage   {_sch_icon} {_sch_wgt}/15  ({_sch_raw:.0%})"
+    print(f"║{_sch_line:<{_W - 2}}║")
+
+    print("╠" + "═" * (_W - 2) + "╣")
+    _verdict_line = f"  {conf.verdict[:_W - 5]}"
+    print(f"║{_verdict_line:<{_W - 2}}║")
+    print("╚" + "═" * (_W - 2) + "╝")
+
+    # ── Sanity Anomalies Detail ──────────────────
+    if sanity.anomalies:
+        print("\n" + "-" * _W)
+        print("  🔬 SANITY CHECK ANOMALIES")
+        print("-" * _W)
+        for anomaly in sanity.anomalies:
+            print(f"\n  {anomaly.icon()} [{anomaly.severity}] {anomaly.check_name}")
+            print(f"     {anomaly.message}")
+            if anomaly.affected_column:
+                print(f"     Column: {anomaly.affected_column}")
+        print("-" * _W)
+
+    print("\n" + "=" * _W)
