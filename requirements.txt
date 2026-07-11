@@ -36,3 +36,8 @@ python-multipart>=0.0.20   # needed by FastAPI for form parsing
 # ── Utils ────────────────────────────────────────────────
 rich>=15.0.0
 typer>=0.25.1
+
+# ── Frontend (Streamlit UI) ───────────────────────────────
+streamlit>=1.35.0
+streamlit-ace>=0.1.1
+plotly>=5.0.0

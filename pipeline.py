@@ -138,6 +138,7 @@ class QueryResult:
 
     # Execution
     execution_results:        list[dict]        = field(default_factory=list)
+    dataframe:                Optional[Any]     = None   # raw pandas DataFrame from sandbox
     row_count:                int               = 0
     execution_time_ms:        float             = 0.0
     execution_error:          Optional[str]     = None
@@ -176,6 +177,17 @@ class QueryResult:
 
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialisation."""
+        # Serialise the raw DataFrame to a list of dicts (NaN → None).
+        # Falls back to execution_results if dataframe is not available.
+        if self.dataframe is not None and not self.dataframe.empty:
+            df_records = (
+                self.dataframe
+                .where(self.dataframe.notna(), other=None)
+                .to_dict(orient="records")
+            )
+        else:
+            df_records = self.execution_results  # already a list[dict]
+
         return {
             "question":                 self.question,
             "sql":                      self.sql,
@@ -184,6 +196,7 @@ class QueryResult:
             "tables_accessed":          self.tables_accessed,
             "columns_accessed":         self.columns_accessed,
             "execution_results":        self.execution_results,
+            "dataframe":                df_records,
             "row_count":                self.row_count,
             "execution_time_ms":        round(self.execution_time_ms, 3),
             "execution_error":          self.execution_error,
@@ -303,12 +316,18 @@ If the question is not ambiguous, return:
 }}
 
 Guidelines:
-1. Mark ambiguous only when two or more materially different SQL queries
-   are reasonable for the same question.
-2. Do not mark broad but clear requests as ambiguous.
-3. Do not guess business definitions.
-4. List each plausible interpretation with an example clarified query.
-5. Use only concepts supported by the schema and examples.
+1. Mark ambiguous ONLY when two or more materially different SQL queries
+   are EQUALLY plausible and a wrong choice would produce a clearly wrong answer.
+2. If one interpretation is clearly more natural or common than others,
+   choose it silently — do NOT ask for clarification.
+3. Do not mark broad but clear requests as ambiguous.
+4. Do not guess business definitions.
+5. Simple rewording or paraphrasing of the same logical question is NOT ambiguity.
+6. List interpretations only when the difference is large enough that the user
+   would be confused or misled by any single choice.
+7. Use only concepts supported by the schema and examples.
+8. Prefer returning is_ambiguous=false unless you are highly confident
+   that the question genuinely requires human disambiguation.
 
 Database Schema:
 {schema_text}
@@ -484,11 +503,13 @@ def run_query(question: str) -> QueryResult:
         if sandbox_result.success:
             result.row_count         = sandbox_result.row_count
             result.execution_time_ms = sandbox_result.execution_time * 1000
+            # Store the raw DataFrame directly for CLI / downstream consumers
+            result.dataframe = sandbox_result.dataframe
             if (
                 sandbox_result.dataframe is not None
                 and not sandbox_result.dataframe.empty
             ):
-                # Serialise rows as list-of-dicts; replace NaN with None
+                # Also keep a JSON-safe copy for the API (to_dict)
                 result.execution_results = (
                     sandbox_result.dataframe
                     .where(sandbox_result.dataframe.notna(), other=None)

@@ -1,5 +1,5 @@
 """
-app.py
+main.py
 ======
 FastAPI REST API for the Text-to-SQL pipeline.
 
@@ -99,6 +99,7 @@ class QueryResponse(BaseModel):
     tables_accessed:          list[str]
     columns_accessed:         list[dict]
     execution_results:        list[dict]
+    dataframe:                list[dict]        # DataFrame rows serialised from sandbox result
     row_count:                int
     execution_time_ms:        float
     execution_error:          Optional[str]

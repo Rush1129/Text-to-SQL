@@ -162,28 +162,32 @@ def _print_query_result(result) -> None:
             f"— {result.row_count} row(s) returned"
         )
 
-        if result.execution_results:
-            rows     = result.execution_results
-            columns  = list(rows[0].keys()) if rows else []
-            display  = rows[:20]
+        if result.dataframe is not None and not result.dataframe.empty:
+            df          = result.dataframe
+            display_limit = 20
+            df_display  = df.head(display_limit)
+            columns     = list(df_display.columns)
 
             col_widths = [
-                max(len(c), max((len(str(r.get(c, ""))) for r in display), default=0))
+                max(len(str(c)), max(
+                    (len(str(v)) for v in df_display[c]),
+                    default=0
+                ))
                 for c in columns
             ]
-            header    = " | ".join(f"{c:<{w}}" for c, w in zip(columns, col_widths))
+            header    = " | ".join(f"{str(c):<{w}}" for c, w in zip(columns, col_widths))
             separator = "-" * len(header)
             print(f"\n   {header}")
             print(f"   {separator}")
-            for row in display:
+            for _, row in df_display.iterrows():
                 row_str = " | ".join(
-                    f"{str(row.get(c, '')):<{w}}"
-                    for c, w in zip(columns, col_widths)
+                    f"{str(v):<{w}}"
+                    for v, w in zip(row, col_widths)
                 )
                 print(f"   {row_str}")
 
-            if result.row_count > len(display):
-                remaining = result.row_count - len(display)
+            if result.row_count > display_limit:
+                remaining = result.row_count - display_limit
                 print(f"\n   ... and {remaining} more row(s)")
 
         print("\n📁 Execution audit written to: guardrails/execution_audit.log")
