@@ -5,16 +5,23 @@ SQL Guardrail Middleware
 Safety layer that validates every SQL query before execution.
 
 Rules (each independently configurable):
-  1. Block DDL (CREATE, ALTER, DROP, …)
-  2. Block DML writes (INSERT, UPDATE, DELETE, …)
-  3. Reject subqueries nested deeper than N levels
+  1. Classify DDL as RISKY — warn user, require confirmation
+  2. Classify DML writes as MODERATE (or SAFE if ≤100 rows)
+  3. Reject subqueries nested deeper than N levels (hard block)
   4. Enforce a row LIMIT if none is specified
-  5. Block queries estimated to scan > N rows (EXPLAIN)
+  5. Block queries estimated to scan > N rows (EXPLAIN, hard block)
+
+Risk Levels
+-----------
+  SAFE     – Read-only SELECT; or DML estimated to touch ≤100 rows
+  MODERATE – DML writes (INSERT/UPDATE/DELETE/MERGE) with >100 row estimate
+  RISKY    – DDL (CREATE/ALTER/DROP/TRUNCATE), or hard-blocked violations
 """
 
 import logging
 import os
 import re
+from enum import Enum
 
 import psycopg2
 import sqlparse
@@ -22,6 +29,17 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from .guardrail_config import GuardrailConfig
+
+
+# =========================================================
+# RISK LEVEL
+# =========================================================
+
+class RiskLevel(str, Enum):
+    """Risk classification for a SQL query."""
+    SAFE     = "safe"
+    MODERATE = "moderate"
+    RISKY    = "risky"
 
 
 # =========================================================
@@ -43,6 +61,14 @@ class GuardrailResult(BaseModel):
     violations: list[str] = Field(
         default_factory=list,
         description="List of human-readable violation reasons.",
+    )
+    risk_level: RiskLevel = Field(
+        default=RiskLevel.SAFE,
+        description="Risk classification: safe, moderate, or risky.",
+    )
+    risk_warning: str = Field(
+        default="",
+        description="1–3 line human-readable warning about what this query may do.",
     )
 
 
@@ -96,50 +122,100 @@ class SQLGuardrail:
             sql.replace("\n", " ").strip(),
         )
 
-    # ── Rule 1: DDL Check ───────────────────────────
+    # ── Risk Classification ─────────────────────────
+
+    # Warning templates
+    _WARNINGS = {
+        "ddl": (
+            "⚠️ This query will permanently alter your database structure — "
+            "it may drop tables, delete columns, or rename objects. "
+            "This action is difficult or impossible to undo."
+        ),
+        "dml_moderate": (
+            "⚠️ This query will modify data in your database — rows may be "
+            "inserted, updated, or deleted permanently. "
+            "Make sure you intend to change this data before proceeding."
+        ),
+        "dml_safe": (
+            "ℹ️ This write query is estimated to affect at most 100 rows — "
+            "it has been classified as low-risk. "
+            "Review the SQL carefully before executing."
+        ),
+    }
+
+    def _estimate_affected_rows(self, sql: str, dsn: str | None) -> int | None:
+        """
+        Use EXPLAIN to estimate how many rows a DML statement affects.
+        Returns the row estimate, or None if unavailable.
+        """
+        if dsn is None:
+            return None
+        try:
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            cursor = conn.cursor()
+            cursor.execute(f"EXPLAIN {sql}")
+            plan_rows = cursor.fetchall()
+            conn.close()
+            for (line,) in plan_rows:
+                # First line of EXPLAIN output has the top-level row estimate
+                rows_match = re.search(r"rows=(\d+)", line)
+                if rows_match:
+                    return int(rows_match.group(1))
+        except Exception:
+            pass
+        return None
+
+    def classify_risk(
+        self,
+        sql: str,
+        dsn: str | None = None,
+    ) -> tuple[RiskLevel, str]:
+        """
+        Classify a SQL query into SAFE / MODERATE / RISKY and return
+        a (risk_level, risk_warning) tuple.
+
+        Logic:
+          - DDL keywords → RISKY
+          - DML write keywords:
+              • estimated rows ≤ 100 → SAFE (with informational note)
+              • otherwise            → MODERATE
+          - Everything else (SELECT, WITH, EXPLAIN) → SAFE
+        """
+        first_token = self._first_keyword(sql)
+
+        # DDL is always RISKY
+        if first_token in {kw.upper() for kw in self.config.ddl_keywords}:
+            return RiskLevel.RISKY, self._WARNINGS["ddl"]
+
+        # DML writes — check estimated row count
+        if first_token in {kw.upper() for kw in self.config.dml_write_keywords}:
+            estimated = self._estimate_affected_rows(sql, dsn)
+            if estimated is not None and estimated <= 100:
+                return RiskLevel.SAFE, self._WARNINGS["dml_safe"]
+            return RiskLevel.MODERATE, self._WARNINGS["dml_moderate"]
+
+        # Everything else (SELECT, WITH, EXPLAIN …)
+        return RiskLevel.SAFE, ""
+
+    # ── Rule 1: DDL Check (kept for hard-block cases) ──
 
     def check_ddl(self, sql: str) -> str | None:
         """
-        Return a violation string if the query
-        starts with a DDL keyword, else None.
+        No longer returns a hard block — DDL is now classified as RISKY
+        and surfaced to the user for confirmation. Returns None always.
+        Preserved for any callers that still reference this method.
         """
-        if not self.config.block_ddl:
-            return None
-
-        first_token = self._first_keyword(sql)
-
-        if first_token in {
-            kw.upper()
-            for kw in self.config.ddl_keywords
-        }:
-            return (
-                f"DDL_BLOCKED: Statement type "
-                f"'{first_token}' is not allowed."
-            )
-
         return None
 
-    # ── Rule 2: DML Write Check ─────────────────────
+    # ── Rule 2: DML Write Check (kept for compatibility) ─
 
     def check_dml_writes(self, sql: str) -> str | None:
         """
-        Return a violation string if the query is a
-        DML write operation, else None.
+        No longer returns a hard block — DML is classified as MODERATE
+        or SAFE via classify_risk(). Returns None always.
+        Preserved for any callers that still reference this method.
         """
-        if not self.config.block_dml_writes:
-            return None
-
-        first_token = self._first_keyword(sql)
-
-        if first_token in {
-            kw.upper()
-            for kw in self.config.dml_write_keywords
-        }:
-            return (
-                f"DML_WRITE_BLOCKED: Statement type "
-                f"'{first_token}' is not allowed."
-            )
-
         return None
 
     # ── Rule 3: Subquery Depth Check ────────────────
@@ -362,79 +438,77 @@ class SQLGuardrail:
         """
         Run all guardrail checks in order.
 
+        DDL and DML are no longer hard-blocked — they are classified into
+        risk levels (SAFE / MODERATE / RISKY) and surfaced to the caller
+        so the user can confirm before execution.
+
+        Hard blocks remain for:
+          - Subqueries nested deeper than max_subquery_depth
+          - Queries estimated to seq-scan > max_scan_rows rows
+
         Args:
             sql: The SQL query to validate.
             dsn: Optional psycopg2 DSN connection string
-                 (needed for EXPLAIN check).
+                 (needed for EXPLAIN-based checks).
 
         Returns:
-            GuardrailResult with allowed status,
-            the (possibly modified) SQL, and any
-            violation messages.
+            GuardrailResult with allowed status, the (possibly modified)
+            SQL, violation messages, risk_level, and risk_warning.
         """
         violations: list[str] = []
         current_sql = sql.strip()
 
-        # ── 1. DDL Check ────────────────────────────
-        ddl_violation = self.check_ddl(current_sql)
-        if ddl_violation:
-            violations.append(ddl_violation)
-            self._log_blocked("DDL_DETECTED", current_sql)
-            return GuardrailResult(
-                allowed=False,
-                sql=current_sql,
-                violations=violations,
-            )
+        # ── 1. Risk Classification ───────────────────
+        # Classify DDL/DML — does NOT block; caller decides what to do.
+        risk_level, risk_warning = self.classify_risk(current_sql, dsn)
 
-        # ── 2. DML Write Check ──────────────────────
-        dml_violation = self.check_dml_writes(current_sql)
-        if dml_violation:
-            violations.append(dml_violation)
-            self._log_blocked("DML_WRITE_DETECTED", current_sql)
-            return GuardrailResult(
-                allowed=False,
-                sql=current_sql,
-                violations=violations,
-            )
-
-        # ── 3. Subquery Depth Check ─────────────────
-        depth_violation = self.check_subquery_depth(
-            current_sql
-        )
+        # ── 2. Subquery Depth Check (hard block) ─────
+        depth_violation = self.check_subquery_depth(current_sql)
         if depth_violation:
             violations.append(depth_violation)
-            self._log_blocked(
-                "DEEP_SUBQUERY", current_sql
-            )
+            self._log_blocked("DEEP_SUBQUERY", current_sql)
             return GuardrailResult(
                 allowed=False,
                 sql=current_sql,
                 violations=violations,
+                risk_level=RiskLevel.RISKY,
+                risk_warning=(
+                    "🚫 This query contains deeply nested subqueries that "
+                    "exceed the allowed depth limit and has been blocked "
+                    "for safety."
+                ),
             )
 
-        # ── 4. Row Limit Enforcement ────────────────
-        current_sql = self.enforce_row_limit(current_sql)
+        # ── 3. Row Limit Enforcement ─────────────────
+        # Only apply LIMIT to SELECT queries (not DML/DDL)
+        first_token = self._first_keyword(current_sql)
+        if first_token == "SELECT":
+            current_sql = self.enforce_row_limit(current_sql)
 
-        # ── 5. EXPLAIN Scan Check ───────────────────
-        scan_violation = self.check_explain_scan(
-            current_sql, dsn
-        )
+        # ── 4. EXPLAIN Scan Check (hard block) ───────
+        scan_violation = self.check_explain_scan(current_sql, dsn)
         if scan_violation:
             violations.append(scan_violation)
-            self._log_blocked(
-                "EXPENSIVE_SCAN", current_sql
-            )
+            self._log_blocked("EXPENSIVE_SCAN", current_sql)
             return GuardrailResult(
                 allowed=False,
                 sql=current_sql,
                 violations=violations,
+                risk_level=RiskLevel.RISKY,
+                risk_warning=(
+                    "🚫 This query would perform a massive sequential scan "
+                    "across hundreds of thousands of rows and has been blocked "
+                    "to protect database performance."
+                ),
             )
 
-        # ── All checks passed ───────────────────────
+        # ── All structural checks passed ─────────────
         return GuardrailResult(
             allowed=True,
             sql=current_sql,
-            violations=[],
+            violations=violations,
+            risk_level=risk_level,
+            risk_warning=risk_warning,
         )
 
     # ── Helpers ─────────────────────────────────────

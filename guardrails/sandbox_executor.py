@@ -117,6 +117,7 @@ class SandboxResult(BaseModel):
     columns         – Column names from the result set.
     rows            – Raw result rows (capped at *row_limit*).
     row_count       – Actual number of rows returned (before cap).
+    rows_affected   – Rows modified by DML (INSERT/UPDATE/DELETE).
     dataframe       – Results as a pandas DataFrame (or None on error).
     execution_time  – Wall-clock seconds the query took (perf_counter).
     explain_plan    – List of rows from EXPLAIN.
@@ -140,6 +141,13 @@ class SandboxResult(BaseModel):
     row_count: int = Field(
         default=0,
         description="Total rows returned before the cap was applied.",
+    )
+    rows_affected: int = Field(
+        default=0,
+        description=(
+            "Number of rows modified by DML statements "
+            "(INSERT/UPDATE/DELETE). Zero for SELECT queries."
+        ),
     )
     dataframe: Optional[Any] = Field(
         default=None,
@@ -178,22 +186,25 @@ class SandboxResult(BaseModel):
 
 class SandboxExecutor:
     """
-    Executes SQL queries inside a read-only PostgreSQL sandbox.
+    Executes SQL queries inside a PostgreSQL sandbox with
+    configurable protection layers.
 
-    Three independent protection layers ensure the database
-    is never modified, even if the guardrail layer misses
-    a dangerous query.
-
-    Protection layers:
+    When ``readonly=True`` (default, used for Viewer role):
       1. Read-only PostgreSQL role (DB-level GRANT enforcement)
       2. SET TRANSACTION READ ONLY (session-level guard)
       3. Explicit ROLLBACK in finally block
+
+    When ``readonly=False`` (Editor / Admin roles):
+      1. Role-specific PostgreSQL privileges enforce boundaries
+      2. DML queries are COMMITTED so writes persist
+      3. SELECT queries still use ROLLBACK (no side effects)
 
     Every execution is also *instrumented*:
 
     * Precise wall-clock timing via ``time.perf_counter()``
     * ``EXPLAIN`` captured before the main query
     * Results packaged into a ``pandas.DataFrame``
+    * ``rows_affected`` tracked via ``cursor.rowcount`` for DML
     * Structured JSON-line audit log written for every call
 
     Usage::
@@ -207,13 +218,6 @@ class SandboxExecutor:
             for step in result.explain_plan:
                 print(step["detail"])
     """
-
-    # Human-readable label for the protection stack
-    _PROTECTION_SUMMARY = (
-        "PostgreSQL read-only role + "
-        "SET TRANSACTION READ ONLY + "
-        "auto-rollback transaction"
-    )
 
     def __init__(
         self,
@@ -240,37 +244,64 @@ class SandboxExecutor:
 
     # ── Main Entry Point ────────────────────────────
 
+    # DML keywords that indicate a write operation
+    _DML_WRITE_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE"}
+
+    @staticmethod
+    def _is_dml_write(sql: str) -> bool:
+        """Return True if *sql* starts with a DML write keyword."""
+        first_word = sql.strip().split()[0].upper() if sql.strip() else ""
+        return first_word in SandboxExecutor._DML_WRITE_KEYWORDS
+
+    @property
+    def _protection_summary(self) -> str:
+        """Human-readable label for the current protection stack."""
+        if self.readonly:
+            return (
+                "PostgreSQL role-based privileges + "
+                "SET TRANSACTION READ ONLY + "
+                "auto-rollback transaction"
+            )
+        return (
+            "PostgreSQL role-based privileges + "
+            "COMMIT for DML / ROLLBACK for SELECT"
+        )
+
     def execute(self, sql: str) -> SandboxResult:
         """
-        Execute *sql* inside the read-only sandbox.
+        Execute *sql* inside the sandbox.
 
         Steps:
-          1. Open connection using read-only PG role
-          2. Begin transaction with SET TRANSACTION READ ONLY
+          1. Open connection using the role-specific PG user
+          2. If readonly: SET TRANSACTION READ ONLY
           3. Capture EXPLAIN plan
           4. Execute the query (timed)
-          5. Fetch and cap results → DataFrame
-          6. ROLLBACK (always, even on success)
-          7. Write structured audit record
+          5. Capture rows_affected (cursor.rowcount) for DML
+          6. Fetch and cap results → DataFrame
+          7. COMMIT for DML (non-readonly) or ROLLBACK
+          8. Write structured audit record
 
         Returns:
-            SandboxResult with columns, rows, DataFrame,
-            execution_time, explain_plan, and protection metadata.
+            SandboxResult with columns, rows, rows_affected,
+            DataFrame, execution_time, explain_plan, and
+            protection metadata.
         """
         conn = None
         start_ts = datetime.now(timezone.utc).isoformat()
+        is_write = self._is_dml_write(sql)
 
         try:
-            # ── Layer 1: Read-only PG role connection ─
+            # ── Layer 1: Role-specific PG connection ──
             conn = self._open_connection()
             cursor = conn.cursor()
 
-            # ── Layer 2: Read-only transaction ────────
+            # ── Layer 2: Read-only transaction guard ──
             if self.readonly:
                 cursor.execute("SET TRANSACTION READ ONLY;")
 
             _logger.info(
-                "Executing query in sandbox: %s",
+                "Executing query in sandbox (readonly=%s): %s",
+                self.readonly,
                 sql.replace("\n", " ").strip()[:120],
             )
 
@@ -282,6 +313,11 @@ class SandboxExecutor:
             cursor.execute(sql)
             execution_time = time.perf_counter() - t0
 
+            # ── Rows affected (DML) ───────────────────
+            rows_affected = 0
+            if is_write and cursor.rowcount and cursor.rowcount >= 0:
+                rows_affected = cursor.rowcount
+
             # ── Fetch results ─────────────────────────
             columns = (
                 [desc[0] for desc in cursor.description]
@@ -289,8 +325,13 @@ class SandboxExecutor:
                 else []
             )
 
-            all_rows = cursor.fetchall()
-            row_count = len(all_rows)
+            if columns:
+                all_rows = cursor.fetchall()
+                row_count = len(all_rows)
+            else:
+                # DML statements may not return rows
+                all_rows = []
+                row_count = rows_affected
 
             # Apply row cap
             capped_rows = [
@@ -305,24 +346,25 @@ class SandboxExecutor:
             )
 
             _logger.info(
-                "Query returned %d row(s) in %.4fs "
-                "(cap: %d, df shape: %s).",
-                row_count,
+                "Query OK: %d row(s) returned, %d row(s) affected "
+                "in %.4fs (readonly=%s).",
+                len(all_rows),
+                rows_affected,
                 execution_time,
-                self.row_limit,
-                df.shape,
+                self.readonly,
             )
 
             result = SandboxResult(
                 success=True,
                 columns=columns,
                 rows=capped_rows,
-                row_count=row_count,
+                row_count=row_count if columns else rows_affected,
+                rows_affected=rows_affected,
                 dataframe=df,
                 execution_time=execution_time,
                 explain_plan=explain_plan,
                 error=None,
-                sandbox_info=self._PROTECTION_SUMMARY,
+                sandbox_info=self._protection_summary,
             )
 
         except psycopg2.Error as e:
@@ -341,19 +383,24 @@ class SandboxExecutor:
                 columns=[],
                 rows=[],
                 row_count=0,
+                rows_affected=0,
                 dataframe=None,
                 execution_time=0.0,
                 explain_plan=[],
                 error=f"SANDBOX_BLOCKED: {error_msg}",
-                sandbox_info=self._PROTECTION_SUMMARY,
+                sandbox_info=self._protection_summary,
             )
 
         finally:
-            # ── Layer 3: Always rollback ───────────────
+            # ── Layer 3: COMMIT for DML (non-readonly) or ROLLBACK ──
             if conn:
                 try:
-                    conn.rollback()
-                    _logger.info("Transaction rolled back.")
+                    if not self.readonly and is_write and result.success:
+                        conn.commit()
+                        _logger.info("DML transaction committed.")
+                    else:
+                        conn.rollback()
+                        _logger.info("Transaction rolled back.")
                 except psycopg2.Error:
                     pass  # Connection may already be closed
                 finally:
@@ -419,9 +466,11 @@ class SandboxExecutor:
             "success":        result.success,
             "execution_time": round(result.execution_time, 6),
             "row_count":      result.row_count,
+            "rows_affected":  result.rows_affected,
             "rows_capped":    result.row_count > self.row_limit,
             "explain_steps":  len(result.explain_plan),
             "error":          result.error,
+            "readonly":       self.readonly,
         }
         _audit_logger.info(json.dumps(record))
 

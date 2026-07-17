@@ -30,7 +30,9 @@ from langchain_groq import ChatGroq
 
 from guardrails import SQLGuardrail, SandboxExecutor
 from guardrails.sandbox_executor import build_dsn
+from guardrails.sql_guardrails import RiskLevel
 from models import StructuredSQLResponse, validate_sql_syntax
+from rbac import Role, get_dsn_for_role
 from verification import (
     ConfidenceScorer,
     ResultSanityChecker,
@@ -104,6 +106,30 @@ sanity_checker = ResultSanityChecker(
 )
 conf_scorer = ConfidenceScorer(schema=schema)
 
+# Cache of role-specific sandbox executors
+_role_sandbox_cache: dict[Role, SandboxExecutor] = {}
+
+
+def _get_sandbox_for_role(role: Role) -> SandboxExecutor:
+    """
+    Return a SandboxExecutor using the PostgreSQL DSN that
+    matches *role*.  Viewer gets readonly=True; Editor/Admin
+    get readonly=False so DML writes can persist.
+
+    Results are cached per role.
+    """
+    if role not in _role_sandbox_cache:
+        dsn = get_dsn_for_role(role)
+        readonly = (role == Role.VIEWER)
+        _role_sandbox_cache[role] = SandboxExecutor(
+            dsn=dsn, readonly=readonly,
+        )
+        logger.info(
+            "Created sandbox for role=%s (readonly=%s).",
+            role.value, readonly,
+        )
+    return _role_sandbox_cache[role]
+
 logger.info("All pipeline components ready.")
 
 # =========================================================
@@ -151,6 +177,8 @@ class QueryResult:
     guardrail_allowed:        bool              = True
     guardrail_warnings:       list[str]         = field(default_factory=list)
     guardrail_limit_applied:  bool              = False
+    risk_level:               str               = "safe"   # safe | moderate | risky
+    risk_warning:             str               = ""       # Human-readable warning
 
     # Back-translation verification
     back_translated_question: str               = ""
@@ -174,6 +202,9 @@ class QueryResult:
 
     # Top-level error (unexpected exception)
     error:                    Optional[str]     = None
+
+    # RBAC: rows modified by DML operations
+    rows_affected:            int               = 0
 
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialisation."""
@@ -205,6 +236,8 @@ class QueryResult:
             "guardrail_allowed":        self.guardrail_allowed,
             "guardrail_warnings":       self.guardrail_warnings,
             "guardrail_limit_applied":  self.guardrail_limit_applied,
+            "risk_level":               self.risk_level,
+            "risk_warning":             self.risk_warning,
             "back_translated_question": self.back_translated_question,
             "alignment_score":          round(self.alignment_score, 4),
             "alignment_label":          self.alignment_label,
@@ -218,6 +251,7 @@ class QueryResult:
             "needs_clarification":      self.needs_clarification,
             "clarification_request":    self.clarification_request,
             "error":                    self.error,
+            "rows_affected":            self.rows_affected,
         }
 
 
@@ -424,7 +458,11 @@ def generate_structured_sql(
 # MAIN PIPELINE FUNCTION
 # =========================================================
 
-def run_query(question: str) -> QueryResult:
+def run_query(
+    question: str,
+    confirmed: bool = False,
+    role: str | None = None,
+) -> QueryResult:
     """
     Run the complete Text-to-SQL pipeline for *question*.
 
@@ -432,11 +470,19 @@ def run_query(question: str) -> QueryResult:
     -----
     1. Ambiguity detection
     2. SQL generation + syntax validation
-    3. Guardrail check
+    3. Guardrail check + risk classification
     4. Back-translation verification
-    5. Sandbox execution
+    5. Sandbox execution  (skipped when risk > SAFE and not confirmed)
     6. Result sanity check
     7. Confidence scoring
+
+    Parameters
+    ----------
+    question  : Natural-language question from the user.
+    confirmed : If True, the user has acknowledged the risk warning
+                and wants to proceed with execution regardless of risk level.
+    role      : User's role (viewer / editor / admin). Determines which
+                PostgreSQL user and sandbox mode to use.
 
     Returns a QueryResult dataclass.  On unexpected errors the
     ``error`` field is set and all other fields have safe defaults.
@@ -445,6 +491,16 @@ def run_query(question: str) -> QueryResult:
     logger.info("run_query: %r", question)
 
     result = QueryResult(question=question, sql="", safe_sql="", explanation="")
+
+    # Resolve which sandbox to use based on role
+    if role:
+        try:
+            role_enum = Role(role)
+        except ValueError:
+            role_enum = Role.VIEWER
+        active_sandbox = _get_sandbox_for_role(role_enum)
+    else:
+        active_sandbox = sandbox  # Default readonly sandbox
 
     try:
         # ── 1. Ambiguity ──────────────────────────────────
@@ -467,22 +523,32 @@ def run_query(question: str) -> QueryResult:
         result.sql_valid          = is_valid
         result.validation_message = val_msg
 
-        # ── 3. Guardrails ─────────────────────────────────
+        # ── 3. Guardrails + Risk Classification ──────────
         guardrail_result = guardrail.validate(response.sql_query, dsn=PG_DSN)
 
+        safe_sql = guardrail_result.sql
+        result.safe_sql                = safe_sql
+        result.guardrail_allowed       = guardrail_result.allowed
+        result.guardrail_warnings      = guardrail_result.violations
+        result.guardrail_limit_applied = (safe_sql != response.sql_query)
+        result.risk_level              = guardrail_result.risk_level.value
+        result.risk_warning            = guardrail_result.risk_warning
+
         if not guardrail_result.allowed:
+            # Hard block (deep subquery / expensive scan) — stop here
             logger.warning(
-                "Query blocked by guardrails: %s", guardrail_result.violations
+                "Query hard-blocked by guardrails: %s", guardrail_result.violations
             )
-            result.guardrail_allowed  = False
-            result.guardrail_warnings = guardrail_result.violations
-            result.safe_sql           = response.sql_query
             return result
 
-        safe_sql                        = guardrail_result.sql
-        result.safe_sql                 = safe_sql
-        result.guardrail_warnings       = guardrail_result.violations
-        result.guardrail_limit_applied  = (safe_sql != response.sql_query)
+        # If risk > SAFE and user has not confirmed, return early so the
+        # frontend can show the warning and ask for confirmation.
+        if guardrail_result.risk_level != RiskLevel.SAFE and not confirmed:
+            logger.info(
+                "Query has risk_level=%s — awaiting user confirmation.",
+                guardrail_result.risk_level.value,
+            )
+            return result
 
         # ── 4. Back-translation verification ─────────────
         verif = verifier.verify(question, safe_sql)
@@ -498,7 +564,7 @@ def run_query(question: str) -> QueryResult:
         )
 
         # ── 5. Sandbox execution ──────────────────────────
-        sandbox_result = sandbox.execute(safe_sql)
+        sandbox_result = active_sandbox.execute(safe_sql)
 
         if sandbox_result.success:
             result.row_count         = sandbox_result.row_count
@@ -516,9 +582,11 @@ def run_query(question: str) -> QueryResult:
                     .to_dict(orient="records")
                 )
             logger.info(
-                "Sandbox execution OK: %d row(s) in %.2f ms",
-                result.row_count, result.execution_time_ms,
+                "Sandbox execution OK: %d row(s), %d affected in %.2f ms",
+                result.row_count, sandbox_result.rows_affected,
+                result.execution_time_ms,
             )
+            result.rows_affected = sandbox_result.rows_affected
         else:
             result.execution_error = sandbox_result.error
             logger.warning("Sandbox execution failed: %s", sandbox_result.error)

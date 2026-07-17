@@ -127,6 +127,47 @@ html, body, [class*="css"] {
     font-size: 0.88rem;
 }
 
+/* ---------- risk banners ---------- */
+.risk-banner {
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 18px;
+    backdrop-filter: blur(12px);
+    border: 1px solid;
+}
+.risk-safe {
+    background: rgba(20, 83, 45, 0.35);
+    border-color: #22c55e;
+}
+.risk-moderate {
+    background: rgba(120, 53, 15, 0.35);
+    border-color: #f59e0b;
+}
+.risk-risky {
+    background: rgba(127, 29, 29, 0.40);
+    border-color: #ef4444;
+}
+.risk-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    letter-spacing: 0.4px;
+    margin-bottom: 10px;
+}
+.risk-badge-safe     { background: rgba(34,197,94,0.18);  color: #86efac; border: 1px solid #22c55e; }
+.risk-badge-moderate { background: rgba(245,158,11,0.18); color: #fde68a; border: 1px solid #f59e0b; }
+.risk-badge-risky    { background: rgba(239,68,68,0.18);  color: #fca5a5; border: 1px solid #ef4444; }
+.risk-warning-text {
+    color: #e2e8f0;
+    font-size: 0.93rem;
+    line-height: 1.65;
+    margin: 8px 0 14px 0;
+}
+
 /* ---------- section labels ---------- */
 .section-label {
     color: #94a3b8;
@@ -216,14 +257,18 @@ hr { border-color: #334155 !important; }
 
 def _init_state():
     defaults = {
-        "result":           None,
-        "question":         "",
-        "loaded_question":  None,
-        "session_id":       "default",
-        "api_base":         "http://localhost:8000",
-        "history":          [],
-        "schema":           None,
-        "last_sql":         "",
+        "result":               None,
+        "question":             "",
+        "loaded_question":      None,
+        "session_id":           "default",
+        "api_base":             "http://localhost:8000",
+        "history":              [],
+        "schema":               None,
+        "last_sql":             "",
+        "pending_confirmation": False,   # True when awaiting user risk-confirm
+        "confirmed":            False,   # True after user clicks confirm
+        "user_role":            "viewer",
+        "user_id":              "anonymous",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -235,10 +280,24 @@ _init_state()
 # API HELPERS
 # =========================================================
 
+def _rbac_headers() -> dict:
+    """Return RBAC headers for API requests."""
+    return {
+        "X-User-Id":   st.session_state.user_id,
+        "X-User-Role": st.session_state.user_role,
+    }
+
+
 def _api(method: str, path: str, **kwargs):
     base = st.session_state.api_base.rstrip("/")
+    # Merge RBAC headers with any user-provided headers
+    headers = kwargs.pop("headers", {})
+    headers.update(_rbac_headers())
     try:
-        r = httpx.request(method, f"{base}{path}", timeout=180, **kwargs)
+        r = httpx.request(
+            method, f"{base}{path}",
+            timeout=180, headers=headers, **kwargs,
+        )
         r.raise_for_status()
         return r.json(), None
     except httpx.ConnectError:
@@ -249,10 +308,11 @@ def _api(method: str, path: str, **kwargs):
         return None, str(e)
 
 
-def api_query(question: str) -> tuple:
+def api_query(question: str, confirmed: bool = False) -> tuple:
     return _api("POST", "/v1/query", json={
         "question":   question,
         "session_id": st.session_state.session_id,
+        "confirmed":  confirmed,
     })
 
 
@@ -265,6 +325,14 @@ def api_history() -> tuple:
 
 def api_schema() -> tuple:
     return _api("GET", "/v1/schema")
+
+
+def api_audit(limit: int = 50, offset: int = 0) -> tuple:
+    """Fetch audit logs (Admin only)."""
+    return _api("GET", "/v1/audit", params={
+        "limit":  limit,
+        "offset": offset,
+    })
 
 # =========================================================
 # COMPONENT RENDERERS
@@ -536,6 +604,43 @@ with st.sidebar:
             placeholder="default",
         )
 
+    # RBAC Settings
+    with st.expander("🔐 Role & Identity", expanded=True):
+        role_options = ["viewer", "editor", "admin"]
+        role_icons = {"viewer": "👁️", "editor": "✏️", "admin": "🛡️"}
+        current_idx = role_options.index(st.session_state.user_role) if st.session_state.user_role in role_options else 0
+
+        selected_role = st.selectbox(
+            "Role",
+            options=role_options,
+            index=current_idx,
+            format_func=lambda r: f"{role_icons.get(r, '')} {r.capitalize()}",
+            key="role_selector",
+        )
+        st.session_state.user_role = selected_role
+
+        st.session_state.user_id = st.text_input(
+            "User ID",
+            value=st.session_state.user_id,
+            placeholder="anonymous",
+        )
+
+        # Permission summary badge
+        perm_map = {
+            "viewer": ("Read-only access", "#22c55e", "SELECT queries, schema, history"),
+            "editor": ("Read + Write access", "#f59e0b", "SELECT + INSERT/UPDATE/DELETE"),
+            "admin":  ("Full access", "#ef4444", "All operations + audit logs"),
+        }
+        perm_label, perm_color, perm_desc = perm_map.get(selected_role, perm_map["viewer"])
+        st.markdown(
+            f"<div style='background:rgba({','.join(str(int(perm_color.lstrip('#')[i:i+2], 16)) for i in (0, 2, 4))},0.15); "
+            f"border:1px solid {perm_color}; border-radius:8px; padding:8px 12px; margin-top:8px;'>"
+            f"<span style='color:{perm_color}; font-weight:600; font-size:0.82rem;'>{perm_label}</span>"
+            f"<br><span style='color:#94a3b8; font-size:0.75rem;'>{perm_desc}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
     # Schema explorer
     with st.expander("📐 Schema Explorer", expanded=False):
         schema_data, schema_err = api_schema()
@@ -603,18 +708,22 @@ run_btn   = col_btn1.button("▶ Run Query", type="primary", use_container_width
 clear_btn = col_btn2.button("🗑 Clear", use_container_width=True)
 
 if clear_btn:
-    st.session_state.result   = None
-    st.session_state.question = ""
-    st.session_state.last_sql = ""
+    st.session_state.result               = None
+    st.session_state.question             = ""
+    st.session_state.last_sql             = ""
+    st.session_state.pending_confirmation = False
+    st.session_state.confirmed            = False
     st.rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-# ── Run pipeline ───────────────────────────────────────────────────────
+# ── Run pipeline ──────────────────────────────────────────────────────
 if run_btn and question.strip():
-    st.session_state.question = question.strip()
+    st.session_state.question             = question.strip()
+    st.session_state.pending_confirmation = False
+    st.session_state.confirmed            = False
     with st.spinner("⏳ Running pipeline — generating SQL, executing, verifying…"):
-        data, err = api_query(question.strip())
+        data, err = api_query(question.strip(), confirmed=False)
 
     if err:
         st.error(f"❌ {err}")
@@ -622,6 +731,11 @@ if run_btn and question.strip():
     else:
         st.session_state.result   = data
         st.session_state.last_sql = data.get("safe_sql", "")
+        # If the response comes back with a non-safe risk level and
+        # execution was not yet done, flag for confirmation.
+        risk = data.get("risk_level", "safe")
+        if risk in ("moderate", "risky") and not data.get("execution_results") and not data.get("dataframe"):
+            st.session_state.pending_confirmation = True
 
 # ── Display results ────────────────────────────────────────────────────
 result = st.session_state.result
@@ -643,13 +757,101 @@ if result:
                 st.rerun()
         st.stop()
 
-    # ── Guardrail blocked ───────────────────────────────────────────
+    # ── Hard-blocked query (deep subquery / expensive scan) ─────────
     if not result.get("guardrail_allowed", True):
-        st.error("🚫 **Query Blocked by Guardrails**")
+        risk_warning = result.get("risk_warning", "")
+        st.markdown(
+            f"""
+            <div class='risk-banner risk-risky'>
+                <span class='risk-badge risk-badge-risky'>🚫 Hard Block</span>
+                <p class='risk-warning-text'>{risk_warning or 'This query has been permanently blocked by safety guardrails.'}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         for v in result.get("guardrail_warnings", []):
-            st.markdown(f"- {v}")
-        with st.expander("View raw SQL"):
+            st.markdown(
+                f"<div class='anomaly-error'><strong>❌ Violation:</strong> "
+                f"<span style='color:#fca5a5'>{v}</span></div>",
+                unsafe_allow_html=True,
+            )
+        with st.expander("📝 View raw SQL", expanded=False):
             st.code(result.get("sql", ""), language="sql")
+        st.stop()
+
+    # ── Risk Warning — SAFE write (informational, no gate) ──────────
+    risk_level   = result.get("risk_level", "safe")
+    risk_warning = result.get("risk_warning", "")
+
+    if risk_level == "safe" and risk_warning:
+        st.markdown(
+            f"""
+            <div class='risk-banner risk-safe'>
+                <span class='risk-badge risk-badge-safe'>🟢 Safe — Low-Risk Write</span>
+                <p class='risk-warning-text'>{risk_warning}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ── Risk Warning — MODERATE / RISKY (requires confirmation) ─────
+    elif risk_level in ("moderate", "risky") and st.session_state.get("pending_confirmation"):
+        badge_cfg = {
+            "moderate": ("risk-moderate", "risk-badge-moderate", "🟡 Moderate Risk"),
+            "risky":    ("risk-risky",    "risk-badge-risky",    "🔴 High Risk"),
+        }
+        banner_cls, badge_cls, badge_label = badge_cfg[risk_level]
+
+        st.markdown(
+            f"""
+            <div class='risk-banner {banner_cls}'>
+                <span class='risk-badge {badge_cls}'>{badge_label}</span>
+                <p class='risk-warning-text'>{risk_warning}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("📝 Preview SQL that will execute", expanded=True):
+            st.code(result.get("safe_sql") or result.get("sql", ""), language="sql")
+
+        st.markdown(
+            "<p style='color:#94a3b8; font-size:0.88rem; margin-bottom:12px'>"
+            "Are you sure you want to execute this query against your database?"
+            "</p>",
+            unsafe_allow_html=True,
+        )
+
+        col_confirm, col_cancel, _ = st.columns([1.6, 1, 5])
+        confirm_btn = col_confirm.button(
+            "✅ Yes, Execute Anyway", type="primary",
+            use_container_width=True, key="risk_confirm",
+        )
+        cancel_btn = col_cancel.button(
+            "❌ Cancel", use_container_width=True, key="risk_cancel",
+        )
+
+        if cancel_btn:
+            st.session_state.result               = None
+            st.session_state.pending_confirmation = False
+            st.session_state.confirmed            = False
+            st.rerun()
+
+        if confirm_btn:
+            st.session_state.pending_confirmation = False
+            st.session_state.confirmed            = True
+            with st.spinner("⏳ Executing confirmed query…"):
+                data, err = api_query(
+                    st.session_state.question,
+                    confirmed=True,
+                )
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                st.session_state.result   = data
+                st.session_state.last_sql = data.get("safe_sql", "")
+            st.rerun()
+
         st.stop()
 
     # ── Pipeline error ──────────────────────────────────────────────
@@ -658,12 +860,13 @@ if result:
         st.stop()
 
     # ── Tabs layout ─────────────────────────────────────────────────
-    tab_sql, tab_results, tab_confidence, tab_verify = st.tabs([
-        "📝 SQL",
-        "📊 Results",
-        "🎯 Confidence",
-        "🔁 Verification",
-    ])
+    tab_names = ["📝 SQL", "📊 Results", "🎯 Confidence", "🔁 Verification"]
+    if st.session_state.user_role == "admin":
+        tab_names.append("📋 Audit Log")
+
+    tabs = st.tabs(tab_names)
+    tab_sql, tab_results, tab_confidence, tab_verify = tabs[0], tabs[1], tabs[2], tabs[3]
+    tab_audit = tabs[4] if len(tabs) > 4 else None
 
     # ─── TAB 1: SQL ─────────────────────────────────────────────────
     with tab_sql:
@@ -768,6 +971,56 @@ if result:
         render_verification(result)
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # ─── TAB 5: AUDIT LOG (Admin only) ──────────────────────────────
+    if tab_audit is not None:
+        with tab_audit:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown("<p class='section-label'>Audit Log — Recent Activity</p>", unsafe_allow_html=True)
+            st.markdown(
+                "<p style='color:#94a3b8; font-size:0.82rem; margin-bottom:12px'>"
+                "Full audit trail of all query executions across users and roles.</p>",
+                unsafe_allow_html=True,
+            )
+
+            audit_data, audit_err = api_audit(limit=50)
+            if audit_err:
+                st.error(f"❌ {audit_err}")
+            elif audit_data:
+                records = audit_data.get("records", [])
+                total   = audit_data.get("total_records", 0)
+
+                if records:
+                    st.caption(f"Showing {len(records)} of {total} records (newest first)")
+
+                    # Format for display
+                    display_rows = []
+                    for rec in records:
+                        role_icons = {"viewer": "👁️", "editor": "✏️", "admin": "🛡️"}
+                        r = rec.get("role", "")
+                        display_rows.append({
+                            "Time":       str(rec.get("timestamp", ""))[:19].replace("T", " "),
+                            "User":       rec.get("user_id", ""),
+                            "Role":       f"{role_icons.get(r, '')} {r}",
+                            "Question":   (rec.get("question", "") or "")[:60],
+                            "SQL":        (rec.get("safe_sql", "") or rec.get("generated_sql", "") or "")[:60],
+                            "Time (ms)":  round(rec.get("execution_time_ms", 0), 1),
+                            "Rows":       rec.get("row_count", 0),
+                            "Affected":   rec.get("rows_affected", 0),
+                            "Success":    "✅" if rec.get("success") else "❌",
+                            "Risk":       rec.get("risk_level", ""),
+                            "Permitted":  "✅" if rec.get("permission_granted") else "🚫",
+                        })
+
+                    st.dataframe(
+                        pd.DataFrame(display_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=400,
+                    )
+                else:
+                    st.info("No audit records found.")
+            st.markdown("</div>", unsafe_allow_html=True)
+
 elif not run_btn:
     # Empty state
     st.markdown(
@@ -778,3 +1031,4 @@ elif not run_btn:
         "</div>",
         unsafe_allow_html=True,
     )
+    
