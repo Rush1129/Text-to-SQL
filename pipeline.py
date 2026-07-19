@@ -498,11 +498,30 @@ def build_sql_prompt(
     user_question: str,
     s: dict | None = None,
     coll: any = None,
+    conversation_history: list[dict] | None = None,
 ) -> str:
     relevant_tables   = get_relevant_tables(user_question, coll=coll)
     schema_text       = format_schema(relevant_tables, s=s)
     relationship_text = format_relationships(relevant_tables, s=s)
     example_text      = format_examples()
+
+    context_text = ""
+    if conversation_history:
+        recent = conversation_history[-10:]
+        context_text = (
+            "\nPrevious Conversation "
+            "(use this context when the user refers to prior queries):\n"
+        )
+        for turn in recent:
+            if turn.get("role") == "user":
+                context_text += f"User: {turn.get('content', '')}\n"
+            elif turn.get("role") == "assistant":
+                if turn.get("sql"):
+                    context_text += f"Generated SQL: {turn['sql']}\n"
+                if turn.get("explanation"):
+                    context_text += f"Explanation: {turn['explanation']}\n"
+                context_text += "---\n"
+
     return f"""
 You are an expert PostgreSQL SQL generator.
 
@@ -517,6 +536,8 @@ Rules:
 7. In tables_accessed, list every table name referenced in the query.
 8. In columns_accessed, list every column with its table name.
 9. In explanation, provide a clear natural language description.
+10. If the user's question references a previous query or conversation,
+    use the provided conversation context to understand what they mean.
 
 Database Schema:
 {schema_text}
@@ -524,7 +545,7 @@ Database Schema:
 {relationship_text}
 
 {example_text}
-
+{context_text}
 User Question:
 {user_question}
 """
@@ -534,9 +555,13 @@ def generate_structured_sql(
     user_question: str,
     s: dict | None = None,
     coll: any = None,
+    conversation_history: list[dict] | None = None,
 ) -> tuple[StructuredSQLResponse, bool, str]:
     """Generate SQL, return (response, is_valid, validation_msg)."""
-    prompt_text = build_sql_prompt(user_question, s=s, coll=coll)
+    prompt_text = build_sql_prompt(
+        user_question, s=s, coll=coll,
+        conversation_history=conversation_history,
+    )
     response    = structured_llm.invoke(prompt_text)
     is_valid, msg = validate_sql_syntax(response.sql_query)
     logger.info(
@@ -556,6 +581,7 @@ def run_query(
     role: str | None = None,
     connection_id: str | None = None,
     user_id: str | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> QueryResult:
     """
     Run the complete Text-to-SQL pipeline for *question*.
@@ -634,6 +660,7 @@ def run_query(
         # ── 2. SQL generation ─────────────────────────────
         response, is_valid, val_msg = generate_structured_sql(
             question, s=active_schema, coll=active_collection,
+            conversation_history=conversation_history,
         )
 
         result.sql                = response.sql_query
@@ -751,6 +778,264 @@ def run_query(
 
     except Exception as exc:
         logger.exception("Unexpected error in run_query: %s", exc)
+        result.error = str(exc)
+
+    return result
+
+
+# =========================================================
+# SQL VALIDATION (for user-edited SQL)
+# =========================================================
+
+def validate_user_sql(
+    sql: str,
+    connection_id: str | None = None,
+    user_id: str | None = None,
+) -> dict:
+    """
+    Validate user-edited SQL using both sqlparse and the LLM
+    for full schema-aware review.
+
+    Returns a dict with:
+        is_valid        : bool
+        issues          : list[str]
+        suggestions     : str
+        corrected_sql   : str | None
+        risk_assessment : str  ("safe" / "moderate" / "risky")
+    """
+    # Resolve schema for the target connection
+    if connection_id and user_id:
+        try:
+            target_schema, _, _ = _load_connection_resources(
+                connection_id, user_id,
+            )
+        except RuntimeError:
+            target_schema = schema
+    else:
+        target_schema = schema
+
+    # 1. Basic syntax check
+    syntax_valid, syntax_msg = validate_sql_syntax(sql)
+
+    # 2. LLM-based schema-aware validation
+    all_tables = list(target_schema.keys())
+    schema_text = format_schema(all_tables, s=target_schema)
+    relationship_text = format_relationships(all_tables, s=target_schema)
+
+    prompt = f"""You are an expert PostgreSQL SQL validator and reviewer.
+
+Analyze the following SQL query against the provided database schema.
+Check for:
+1. SQL syntax correctness (PostgreSQL dialect)
+2. All table names exist in the schema
+3. All column names exist in the referenced tables
+4. JOIN conditions are valid based on foreign key relationships
+5. Data type compatibility in WHERE clauses and comparisons
+6. Any potential performance issues or improvements
+
+Return ONLY valid JSON (no markdown wrapping). Use this exact structure:
+{{
+    "is_valid": true,
+    "issues": [],
+    "suggestions": "Any recommendations for improvement",
+    "corrected_sql": null,
+    "risk_assessment": "safe"
+}}
+
+If there are problems, set is_valid to false, list the issues, and
+provide a corrected_sql if possible.
+
+risk_assessment should be:
+- "safe" for SELECT queries with no concerns
+- "moderate" for queries that modify data (INSERT/UPDATE/DELETE)
+- "risky" for DDL, queries without WHERE on UPDATE/DELETE, or expensive operations
+
+Database Schema:
+{schema_text}
+
+{relationship_text}
+
+SQL to validate:
+{sql}
+"""
+
+    try:
+        raw = _chain.invoke({"prompt": prompt})
+        parsed = _extract_json_object(raw)
+
+        # Merge syntax validation result
+        if not syntax_valid:
+            parsed["is_valid"] = False
+            if "issues" not in parsed:
+                parsed["issues"] = []
+            parsed["issues"].insert(0, f"Syntax error: {syntax_msg}")
+
+        # Ensure all expected keys exist
+        parsed.setdefault("is_valid", syntax_valid)
+        parsed.setdefault("issues", [])
+        parsed.setdefault("suggestions", "")
+        parsed.setdefault("corrected_sql", None)
+        parsed.setdefault("risk_assessment", "safe")
+
+        logger.info(
+            "SQL validation complete: valid=%s, issues=%d",
+            parsed["is_valid"], len(parsed["issues"]),
+        )
+        return parsed
+
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("LLM SQL validation failed to parse: %s", exc)
+        return {
+            "is_valid": syntax_valid,
+            "issues": [syntax_msg] if not syntax_valid else [],
+            "suggestions": "",
+            "corrected_sql": None,
+            "risk_assessment": "safe",
+        }
+
+
+# =========================================================
+# DIRECT SQL EXECUTION (for user-edited SQL)
+# =========================================================
+
+def execute_sql_direct(
+    sql: str,
+    question: str = "",
+    confirmed: bool = False,
+    role: str | None = None,
+    connection_id: str | None = None,
+    user_id: str | None = None,
+) -> QueryResult:
+    """
+    Execute a user-provided SQL query through guardrails and sandbox.
+
+    Unlike ``run_query()``, this does NOT generate SQL from a question —
+    it takes the SQL as-is and runs the execution pipeline:
+    guardrails → sandbox → sanity checks → confidence scoring.
+    """
+    logger.info(
+        "execute_sql_direct: sql=%r (connection=%s)",
+        sql[:80], connection_id or "default",
+    )
+
+    result = QueryResult(
+        question=question, sql=sql, safe_sql=sql,
+        explanation="User-provided SQL",
+    )
+
+    # ── Resolve sandbox ──────────────────────────────────
+    conn_sandbox = None
+    active_schema = schema
+
+    if connection_id and user_id:
+        try:
+            conn_schema, _, conn_sb = _load_connection_resources(
+                connection_id, user_id,
+            )
+            conn_sandbox = conn_sb
+            active_schema = conn_schema
+        except RuntimeError as exc:
+            result.error = str(exc)
+            return result
+
+    if conn_sandbox:
+        active_sandbox = conn_sandbox
+    elif role:
+        try:
+            role_enum = Role(role)
+        except ValueError:
+            role_enum = Role.VIEWER
+        active_sandbox = _get_sandbox_for_role(role_enum)
+    else:
+        active_sandbox = sandbox
+
+    try:
+        # ── Syntax validation ────────────────────────────
+        is_valid, val_msg = validate_sql_syntax(sql)
+        result.sql_valid = is_valid
+        result.validation_message = val_msg
+
+        # ── Guardrails ───────────────────────────────────
+        guardrail_result = guardrail.validate(sql, dsn=PG_DSN)
+
+        safe_sql = guardrail_result.sql
+        result.safe_sql = safe_sql
+        result.guardrail_allowed = guardrail_result.allowed
+        result.guardrail_warnings = guardrail_result.violations
+        result.guardrail_limit_applied = (safe_sql != sql)
+        result.risk_level = guardrail_result.risk_level.value
+        result.risk_warning = guardrail_result.risk_warning
+
+        if not guardrail_result.allowed:
+            logger.warning(
+                "SQL hard-blocked by guardrails: %s",
+                guardrail_result.violations,
+            )
+            return result
+
+        if guardrail_result.risk_level != RiskLevel.SAFE and not confirmed:
+            logger.info(
+                "SQL has risk_level=%s — awaiting confirmation.",
+                guardrail_result.risk_level.value,
+            )
+            return result
+
+        # ── Sandbox execution ────────────────────────────
+        sandbox_result = active_sandbox.execute(safe_sql)
+
+        if sandbox_result.success:
+            result.row_count = sandbox_result.row_count
+            result.execution_time_ms = sandbox_result.execution_time * 1000
+            result.dataframe = sandbox_result.dataframe
+            if (
+                sandbox_result.dataframe is not None
+                and not sandbox_result.dataframe.empty
+            ):
+                result.execution_results = (
+                    sandbox_result.dataframe
+                    .where(sandbox_result.dataframe.notna(), other=None)
+                    .to_dict(orient="records")
+                )
+            logger.info(
+                "Direct execution OK: %d row(s) in %.2f ms",
+                result.row_count, result.execution_time_ms,
+            )
+            result.rows_affected = sandbox_result.rows_affected
+        else:
+            result.execution_error = sandbox_result.error
+            logger.warning(
+                "Direct execution failed: %s", sandbox_result.error,
+            )
+
+        # ── Sanity check ─────────────────────────────────
+        sanity = sanity_checker.check(
+            df=sandbox_result.dataframe,
+            row_count=sandbox_result.row_count,
+            sql=safe_sql,
+        )
+        result.sanity_anomalies = [
+            {
+                "check":    a.check_name,
+                "severity": a.severity,
+                "message":  a.message,
+                "column":   a.affected_column,
+            }
+            for a in sanity.anomalies
+        ]
+        result.sanity_pass_rate = sanity.pass_rate
+        result.sanity_summary = sanity.summary
+
+        # ── Confidence (partial — no back-translation) ───
+        conf = conf_scorer.score(
+            syntax_valid=is_valid,
+            alignment_score=0.5,     # neutral since no back-translation
+            sanity_pass_rate=sanity.pass_rate,
+            tables_accessed=[],
+        )
+        result.confidence = conf.as_dict()
+
+    except Exception as exc:
+        logger.exception("Unexpected error in execute_sql_direct: %s", exc)
         result.error = str(exc)
 
     return result

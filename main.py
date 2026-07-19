@@ -203,6 +203,13 @@ class QueryRequest(BaseModel):
         default=None,
         description="UUID of the database connection to query. Defaults to the built-in database.",
     )
+    conversation_history: Optional[list[dict]] = Field(
+        default=None,
+        description=(
+            "List of prior conversation turns for context-aware SQL generation. "
+            "Each turn: {role: 'user'/'assistant', content: str, sql: str?, explanation: str?}"
+        ),
+    )
 
 
 class QueryResponse(BaseModel):
@@ -263,6 +270,48 @@ class HistoryResponse(BaseModel):
 class AuditResponse(BaseModel):
     total_records: int
     records:       list[dict]
+
+
+# ── SQL Validation & Execution ──────────────────────────
+
+class ValidateSQLRequest(BaseModel):
+    sql: str = Field(
+        ..., min_length=1,
+        description="SQL query to validate against the schema.",
+    )
+    connection_id: Optional[str] = Field(
+        default=None,
+        description="Connection UUID. Omit for default database.",
+    )
+
+class ValidateSQLResponse(BaseModel):
+    is_valid:        bool
+    issues:          list[str]
+    suggestions:     str
+    corrected_sql:   Optional[str]
+    risk_assessment: str
+
+class ExecuteSQLRequest(BaseModel):
+    sql: str = Field(
+        ..., min_length=1,
+        description="SQL query to execute.",
+    )
+    question: str = Field(
+        default="",
+        description="Original question for context and audit logging.",
+    )
+    session_id: str = Field(
+        default="default",
+        description="Session identifier for history.",
+    )
+    confirmed: bool = Field(
+        default=False,
+        description="Set to true to acknowledge risk warnings.",
+    )
+    connection_id: Optional[str] = Field(
+        default=None,
+        description="Connection UUID. Omit for default database.",
+    )
 
 
 # =========================================================
@@ -542,6 +591,7 @@ async def post_query(request: QueryRequest, raw_request: Request) -> QueryRespon
             role=ctx.role.value,
             connection_id=request.connection_id,
             user_id=ctx.user_id,
+            conversation_history=request.conversation_history,
         )
     except Exception as exc:
         logger.exception("run_query raised an unexpected exception: %s", exc)
@@ -590,6 +640,130 @@ async def post_query(request: QueryRequest, raw_request: Request) -> QueryRespon
         role=ctx.role.value,
         question=request.question,
         generated_sql=result.sql,
+        safe_sql=result.safe_sql,
+        execution_time_ms=result.execution_time_ms,
+        success=(result.execution_error is None and result.error is None),
+        row_count=result.row_count,
+        rows_affected=result.rows_affected,
+        error=result.execution_error or result.error,
+        risk_level=result.risk_level,
+        permission_granted=True,
+        ip_address=ctx.ip_address,
+    ))
+
+    return QueryResponse(**raw)
+
+
+# =========================================================
+# VALIDATE SQL ENDPOINT
+# =========================================================
+
+@app.post(
+    "/v1/validate-sql",
+    response_model=ValidateSQLResponse,
+    summary="Validate user-edited SQL against the database schema",
+    tags=["Query"],
+)
+async def validate_sql(request: ValidateSQLRequest, raw_request: Request):
+    """
+    AI-powered SQL validation.  Checks syntax (sqlparse) then sends
+    the query to the LLM for schema-aware review (table/column existence,
+    JOIN validity, risk assessment).
+    """
+    ctx = get_current_user(raw_request)
+
+    logger.info(
+        "POST /v1/validate-sql | user=%r | sql=%r",
+        ctx.user_id, request.sql[:80],
+    )
+
+    result = pl.validate_user_sql(
+        sql=request.sql,
+        connection_id=request.connection_id,
+        user_id=ctx.user_id,
+    )
+    return ValidateSQLResponse(**result)
+
+
+# =========================================================
+# EXECUTE SQL ENDPOINT
+# =========================================================
+
+@app.post(
+    "/v1/execute-sql",
+    response_model=QueryResponse,
+    summary="Execute user-provided SQL through guardrails and sandbox",
+    tags=["Query"],
+)
+async def execute_sql_endpoint(
+    request: ExecuteSQLRequest,
+    raw_request: Request,
+) -> QueryResponse:
+    """
+    Execute a user-edited or AI-validated SQL query.  Runs the
+    guardrail → sandbox → sanity pipeline without re-generating SQL.
+    """
+    ctx = get_current_user(raw_request)
+
+    logger.info(
+        "POST /v1/execute-sql | user=%r | role=%s | sql=%r",
+        ctx.user_id, ctx.role.value, request.sql[:80],
+    )
+
+    # RBAC check
+    required = permission_for_sql(request.sql)
+    if not has_permission(ctx.role, required):
+        audit_logger.log(AuditRecord(
+            user_id=ctx.user_id,
+            role=ctx.role.value,
+            question=request.question,
+            generated_sql=request.sql,
+            safe_sql=request.sql,
+            execution_time_ms=0.0,
+            success=False,
+            row_count=0,
+            rows_affected=0,
+            error=f"Permission denied: role '{ctx.role.value}' lacks '{required.value}'",
+            risk_level="safe",
+            permission_granted=False,
+            ip_address=ctx.ip_address,
+        ))
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Permission denied: your role '{ctx.role.value}' "
+                f"does not have '{required.value}' permission."
+            ),
+        )
+
+    try:
+        result = pl.execute_sql_direct(
+            sql=request.sql,
+            question=request.question,
+            confirmed=request.confirmed,
+            role=ctx.role.value,
+            connection_id=request.connection_id,
+            user_id=ctx.user_id,
+        )
+    except Exception as exc:
+        logger.exception("execute_sql_direct raised: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    ts  = datetime.now(timezone.utc).isoformat()
+    raw = result.to_dict()
+    raw["session_id"] = request.session_id
+    raw["timestamp"]  = ts
+    raw["user_id"]    = ctx.user_id
+    raw["role"]       = ctx.role.value
+
+    _history[request.session_id].append(raw)
+
+    # Audit
+    audit_logger.log(AuditRecord(
+        user_id=ctx.user_id,
+        role=ctx.role.value,
+        question=request.question,
+        generated_sql=request.sql,
         safe_sql=result.safe_sql,
         execution_time_ms=result.execution_time_ms,
         success=(result.execution_error is None and result.error is None),

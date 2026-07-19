@@ -1,17 +1,15 @@
 """
 streamlit_app.py
 ================
-Streamlit UI for the Text-to-SQL pipeline.
-
-Connects to the FastAPI backend at http://localhost:8000.
+Streamlit UI for the Text-to-SQL pipeline — Conversational Chat Interface.
 
 Features
 --------
-  • Natural-language question input
-  • Generated SQL with Monaco syntax highlighting (editable)
-  • Sortable, filterable results data table + CSV download
-  • Composite confidence score with per-signal breakdown chart
-  • History panel with click-to-reload
+  • Chat-based conversational interface with context-aware SQL generation
+  • Editable SQL with AI-powered validation (syntax + schema correctness)
+  • Role-gated query execution with clear status indicators
+  • Multi-page layout: Chat, Results & Analysis, Audit Log
+  • Conversation history sent to LLM for follow-up queries
 
 Run:
     streamlit run streamlit_app.py
@@ -232,22 +230,60 @@ html, body, [class*="css"] {
     overflow: hidden !important;
 }
 
-/* ---------- history item ---------- */
-.hist-item {
-    padding: 8px 10px;
-    border-radius: 8px;
-    background: rgba(99, 102, 241, 0.08);
-    border: 1px solid #334155;
-    margin-bottom: 6px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-.hist-item:hover { background: rgba(99, 102, 241, 0.18); }
-.hist-question { font-size: 0.85rem; color: #e2e8f0; font-weight: 500; }
-.hist-meta { font-size: 0.72rem; color: #64748b; margin-top: 2px; }
-
 /* ---------- divider ---------- */
 hr { border-color: #334155 !important; }
+
+/* ---------- chat-specific ---------- */
+.executed-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    border-radius: 8px;
+    padding: 10px 18px;
+    color: #86efac;
+    font-size: 0.88rem;
+    font-weight: 500;
+    margin: 8px 0;
+    width: 100%;
+}
+
+.validation-pass {
+    background: rgba(34, 197, 94, 0.10);
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    color: #86efac;
+}
+.validation-fail {
+    background: rgba(239, 68, 68, 0.10);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    color: #fca5a5;
+}
+
+.nav-btn-active {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+    color: white !important;
+    font-weight: 600 !important;
+}
+
+/* ---------- page back link ---------- */
+.back-link {
+    color: #94a3b8;
+    font-size: 0.85rem;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 12px;
+    cursor: pointer;
+}
+.back-link:hover { color: #a5b4fc; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -257,26 +293,29 @@ hr { border-color: #334155 !important; }
 
 def _init_state():
     defaults = {
-        "result":               None,
-        "question":             "",
-        "loaded_question":      None,
-        "session_id":           "default",
-        "api_base":             "http://localhost:8000",
-        "history":              [],
-        "schema":               None,
-        "last_sql":             "",
-        "pending_confirmation": False,
-        "confirmed":            False,
         # Auth
         "token":                None,
         "user_id":              None,
         "user_email":           None,
         "user_role":            "viewer",
         "logged_in":            False,
+        # Settings
+        "session_id":           "default",
+        "api_base":             "http://localhost:8000",
         # Connections
         "connections":          [],
         "active_connection_id": None,
         "active_connection_name": None,
+        # Chat
+        "messages":             [],        # Conversation messages
+        "current_page":         "chat",    # "chat" | "details" | "audit"
+        "detail_result":        None,      # Result shown on details page
+        # Editing
+        "editing_msg_idx":      None,      # Index of msg being edited
+        "edit_sql":             "",        # SQL in editor
+        "validation_result":    None,      # AI validation result
+        # Schema
+        "schema":               None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -309,7 +348,6 @@ def _api(method: str, path: str, **kwargs):
     except httpx.ConnectError:
         return None, f"Cannot connect to API at `{base}`. Is the backend running?"
     except httpx.HTTPStatusError as e:
-        # Handle 401 (expired token) — auto-logout
         if e.response.status_code == 401:
             st.session_state.token = None
             st.session_state.logged_in = False
@@ -329,7 +367,8 @@ def api_login(email: str, password: str) -> tuple:
         "email": email, "password": password,
     })
 
-def api_query(question: str, confirmed: bool = False) -> tuple:
+def api_query(question: str, confirmed: bool = False,
+              conversation_history: list | None = None) -> tuple:
     payload = {
         "question":   question,
         "session_id": st.session_state.session_id,
@@ -337,7 +376,27 @@ def api_query(question: str, confirmed: bool = False) -> tuple:
     }
     if st.session_state.active_connection_id:
         payload["connection_id"] = st.session_state.active_connection_id
+    if conversation_history:
+        payload["conversation_history"] = conversation_history
     return _api("POST", "/v1/query", json=payload)
+
+def api_validate_sql(sql: str) -> tuple:
+    payload = {"sql": sql}
+    if st.session_state.active_connection_id:
+        payload["connection_id"] = st.session_state.active_connection_id
+    return _api("POST", "/v1/validate-sql", json=payload)
+
+def api_execute_sql(sql: str, question: str = "",
+                    confirmed: bool = False) -> tuple:
+    payload = {
+        "sql":        sql,
+        "question":   question,
+        "session_id": st.session_state.session_id,
+        "confirmed":  confirmed,
+    }
+    if st.session_state.active_connection_id:
+        payload["connection_id"] = st.session_state.active_connection_id
+    return _api("POST", "/v1/execute-sql", json=payload)
 
 def api_history() -> tuple:
     return _api("GET", "/v1/history", params={
@@ -368,6 +427,246 @@ def api_list_connections() -> tuple:
 def api_delete_connection(conn_id: str) -> tuple:
     return _api("DELETE", f"/v1/connections/{conn_id}")
 
+
+# =========================================================
+# HELPER: BUILD CONVERSATION HISTORY FOR API
+# =========================================================
+
+def _build_conv_history() -> list[dict]:
+    """Extract last 10 conversation turns for context-aware generation."""
+    history = []
+    for msg in st.session_state.messages[-20:]:  # last 20 messages ≈ 10 turns
+        if msg["role"] == "user":
+            history.append({
+                "role":    "user",
+                "content": msg["content"],
+            })
+        elif msg["role"] == "assistant" and not msg.get("error"):
+            history.append({
+                "role":        "assistant",
+                "content":     msg.get("content", ""),
+                "sql":         msg.get("sql", ""),
+                "explanation": msg.get("content", ""),
+            })
+    return history
+
+
+# =========================================================
+# HELPER FUNCTIONS (defined after pages to avoid forward refs)
+# =========================================================
+
+def _render_edit_mode(idx: int, msg: dict):
+    """Render inline SQL editor with AI validation for a chat message."""
+    sql = msg.get("sql", "")
+
+    st.markdown(
+        "<p class='section-label'>✏️ Edit SQL</p>",
+        unsafe_allow_html=True,
+    )
+
+    edited_sql = st.text_area(
+        "Edit SQL",
+        value=st.session_state.edit_sql or sql,
+        height=200,
+        key=f"sql_editor_{idx}",
+        label_visibility="collapsed",
+    )
+    st.session_state.edit_sql = edited_sql
+
+    col_v, col_e, col_c, _ = st.columns([1.3, 1.3, 0.8, 3])
+
+    # Validate button
+    if col_v.button(
+        "🔍 Validate",
+        key=f"validate_{idx}",
+        use_container_width=True,
+    ):
+        with st.spinner("🔍 AI is validating your SQL..."):
+            val_data, val_err = api_validate_sql(edited_sql)
+        if val_err:
+            st.session_state.validation_result = {
+                "is_valid": False,
+                "issues": [val_err],
+                "suggestions": "",
+                "corrected_sql": None,
+                "risk_assessment": "safe",
+            }
+        else:
+            st.session_state.validation_result = val_data
+        st.rerun()
+
+    # Execute edited SQL button
+    if col_e.button(
+        "▶ Execute",
+        key=f"exec_edited_{idx}",
+        type="primary",
+        use_container_width=True,
+    ):
+        with st.spinner("⏳ Executing edited SQL…"):
+            data, err = api_execute_sql(
+                sql=edited_sql,
+                question=msg.get("original_question", ""),
+                confirmed=False,
+            )
+        if err:
+            st.error(f"❌ {err}")
+        elif data:
+            risk = data.get("risk_level", "safe")
+            has_results = bool(
+                data.get("execution_results")
+                or data.get("dataframe")
+            )
+            # Update message with new SQL and result
+            msg["sql"] = edited_sql
+            if risk in ("moderate", "risky") and not has_results:
+                msg["needs_confirmation"] = True
+                msg["result"] = data
+                msg["executed"] = False
+            else:
+                msg["executed"] = True
+                msg["result"] = data
+                msg["needs_confirmation"] = False
+            st.session_state.editing_msg_idx = None
+            st.session_state.validation_result = None
+        st.rerun()
+
+    # Cancel button
+    if col_c.button(
+        "Cancel",
+        key=f"cancel_edit_{idx}",
+        use_container_width=True,
+    ):
+        st.session_state.editing_msg_idx = None
+        st.session_state.edit_sql = ""
+        st.session_state.validation_result = None
+        st.rerun()
+
+    # Show validation result
+    val_result = st.session_state.validation_result
+    if val_result:
+        if val_result.get("is_valid"):
+            st.markdown(
+                "<div class='validation-pass'>"
+                "✅ <strong>SQL is valid</strong> — "
+                "All checks passed.</div>",
+                unsafe_allow_html=True,
+            )
+            suggestions = val_result.get("suggestions", "")
+            if suggestions:
+                st.caption(f"💡 {suggestions}")
+        else:
+            issues = val_result.get("issues", [])
+            issues_html = "".join(
+                f"<li>{issue}</li>" for issue in issues
+            )
+            st.markdown(
+                f"<div class='validation-fail'>"
+                f"❌ <strong>Issues found:</strong>"
+                f"<ul style='margin:8px 0 0 0; padding-left:20px'>"
+                f"{issues_html}</ul></div>",
+                unsafe_allow_html=True,
+            )
+            suggestions = val_result.get("suggestions", "")
+            if suggestions:
+                st.caption(f"💡 {suggestions}")
+            corrected = val_result.get("corrected_sql")
+            if corrected:
+                with st.expander("📝 Suggested correction", expanded=True):
+                    st.code(corrected, language="sql")
+                    if st.button(
+                        "Apply correction",
+                        key=f"apply_correction_{idx}",
+                    ):
+                        st.session_state.edit_sql = corrected
+                        st.session_state.validation_result = None
+                        st.rerun()
+
+        risk = val_result.get("risk_assessment", "safe")
+        if risk != "safe":
+            risk_colors = {
+                "moderate": ("🟡", "#fde68a"),
+                "risky": ("🔴", "#fca5a5"),
+            }
+            r_icon, r_color = risk_colors.get(
+                risk, ("🟡", "#fde68a"),
+            )
+            st.caption(
+                f"{r_icon} Risk: **{risk}**"
+            )
+
+
+def _process_api_response(data, err, question: str):
+    """Process the API response and append assistant message."""
+    if err:
+        st.session_state.messages.append({
+            "role":    "assistant",
+            "content": f"Error: {err}",
+            "error":   True,
+        })
+        return
+
+    if not data:
+        st.session_state.messages.append({
+            "role":    "assistant",
+            "content": "No response from the API.",
+            "error":   True,
+        })
+        return
+
+    # Clarification needed
+    if data.get("needs_clarification"):
+        cr = data.get("clarification_request", {})
+        st.session_state.messages.append({
+            "role":                "assistant",
+            "content":             cr.get("message", "Please clarify."),
+            "needs_clarification": True,
+            "clarification_data":  cr,
+        })
+        return
+
+    # Hard block
+    if not data.get("guardrail_allowed", True):
+        st.session_state.messages.append({
+            "role":              "assistant",
+            "content":           data.get("explanation", ""),
+            "sql":               data.get("sql", ""),
+            "blocked":           True,
+            "result":            data,
+            "original_question": question,
+        })
+        return
+
+    # Check risk level
+    risk = data.get("risk_level", "safe")
+    has_results = bool(
+        data.get("execution_results") or data.get("dataframe")
+    )
+
+    if risk in ("moderate", "risky") and not has_results:
+        # Needs risk confirmation
+        st.session_state.messages.append({
+            "role":               "assistant",
+            "content":            data.get("explanation", ""),
+            "sql":                data.get(
+                "safe_sql", data.get("sql", ""),
+            ),
+            "needs_confirmation": True,
+            "executed":           False,
+            "result":             data,
+            "original_question":  question,
+        })
+    else:
+        # Successful — SQL generated and executed
+        st.session_state.messages.append({
+            "role":              "assistant",
+            "content":           data.get("explanation", ""),
+            "sql":               data.get(
+                "safe_sql", data.get("sql", ""),
+            ),
+            "executed":          has_results,
+            "result":            data,
+            "original_question": question,
+        })
 # =========================================================
 # COMPONENT RENDERERS
 # =========================================================
@@ -382,7 +681,6 @@ def render_confidence(conf: dict):
     label     = conf.get("grade_label", "")
     verdict   = conf.get("verdict", "")
     signals   = conf.get("signal_breakdown", {})
-    weighted  = conf.get("weighted_breakdown", {})
 
     grade_class = f"grade-{grade}" if grade in "ABCD" else "grade-D"
     grade_icons = {"A": "🟢", "B": "🟡", "C": "🟠", "D": "🔴"}
@@ -422,14 +720,12 @@ def render_confidence(conf: dict):
     labels = [labels_map[k] for k in keys]
     raw    = [signals.get(k, 0) for k in keys]
     maxes  = [max_pts_map[k] for k in keys]
-    # Earned points = raw signal score × max points for that signal (int)
     earned = [round(raw[i] * maxes[i]) for i in range(len(keys))]
     text   = [f"{earned[i]}/{maxes[i]}" for i in range(len(keys))]
     colors = [
         "#22c55e" if r >= 0.70 else "#f59e0b" if r >= 0.40 else "#ef4444"
         for r in raw
     ]
-    total_max = sum(maxes)  # 100
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -443,7 +739,6 @@ def render_confidence(conf: dict):
         textfont=dict(color="white", family="Inter", size=12),
         hovertemplate="<b>%{y}</b><br>Points: %{x:.1f}<extra></extra>",
     ))
-    # background "empty" bars
     fig.add_trace(go.Bar(
         x=[maxes[i] - earned[i] for i in range(len(keys))],
         y=labels,
@@ -464,27 +759,6 @@ def render_confidence(conf: dict):
         yaxis=dict(showgrid=False, tickfont=dict(size=12, color="#cbd5e1")),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-
-def render_sql_editor(sql: str) -> str:
-    """Render the SQL editor. Returns the (possibly edited) SQL."""
-    st.markdown("<p class='section-label'>Generated SQL</p>", unsafe_allow_html=True)
-    if HAS_ACE:
-        edited = st_ace(
-            value=sql,
-            language="sql",
-            theme="tomorrow_night",
-            key="sql_editor",
-            height=220,
-            auto_update=True,
-            font_size=13,
-            show_gutter=True,
-            wrap=True,
-        )
-    else:
-        st.code(sql, language="sql")
-        edited = sql
-    return edited
 
 
 def render_results(result: dict):
@@ -509,7 +783,6 @@ def render_results(result: dict):
     )
     st.dataframe(df, use_container_width=True, height=380)
 
-    # Download
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="⬇️ Download CSV",
@@ -529,12 +802,19 @@ def render_sanity(result: dict):
         st.success(f"✅ {summary}")
         return
 
-    with st.expander(f"🔬 Sanity Check Anomalies  —  {len(anomalies)} issue(s)  ({pass_rate:.0%} pass rate)", expanded=True):
+    with st.expander(
+        f"🔬 Sanity Check Anomalies  —  {len(anomalies)} issue(s)  "
+        f"({pass_rate:.0%} pass rate)",
+        expanded=True,
+    ):
         for a in anomalies:
             sev  = a.get("severity", "WARNING")
             cls  = "anomaly-error" if sev == "ERROR" else "anomaly-warning"
             icon = "❌" if sev == "ERROR" else "⚠️"
-            col  = f" · Column: <code>{a['column']}</code>" if a.get("column") else ""
+            col  = (
+                f" · Column: <code>{a['column']}</code>"
+                if a.get("column") else ""
+            )
             st.markdown(
                 f"<div class='{cls}'>"
                 f"<strong>{icon} {a.get('check', '')}</strong>{col}<br>"
@@ -544,17 +824,8 @@ def render_sanity(result: dict):
             )
 
 
-def render_guardrail_warnings(result: dict):
-    warnings = result.get("guardrail_warnings", [])
-    limit    = result.get("guardrail_limit_applied", False)
-    if limit:
-        st.info("🔒 Guardrail: LIMIT clause was automatically appended.")
-    if warnings:
-        for w in warnings:
-            st.warning(f"⚠️ Guardrail: {w}")
-
-
 def render_verification(result: dict):
+    """Render back-translation verification."""
     back_q  = result.get("back_translated_question", "")
     score   = result.get("alignment_score", 0)
     label   = result.get("alignment_label", "")
@@ -582,34 +853,20 @@ def render_verification(result: dict):
     if reason:
         st.caption(f"💬 {reason}")
     if flagged:
-        st.warning("⚠️ LOW ALIGNMENT — SQL may not correctly answer the intended question.")
-
-
-def render_history_sidebar(history: list):
-    """Render the history panel in the sidebar."""
-    if not history:
-        st.markdown(
-            "<p style='color:#475569; font-size:0.85rem; text-align:center; padding:12px 0'>"
-            "No queries yet in this session.</p>",
-            unsafe_allow_html=True,
+        st.warning(
+            "⚠️ LOW ALIGNMENT — SQL may not correctly answer the intended question."
         )
-        return
 
-    for i, entry in enumerate(history):
-        q      = entry.get("question", "")[:52]
-        grade  = entry.get("confidence", {}).get("grade", "?")
-        rows   = entry.get("row_count", 0)
-        ts     = entry.get("timestamp", "")[:16].replace("T", " ")
-        grade_icons = {"A": "🟢", "B": "🟡", "C": "🟠", "D": "🔴"}
-        g_icon = grade_icons.get(grade, "⚪")
 
-        with st.expander(f"{g_icon} {q}{'…' if len(entry.get('question','')) > 52 else ''}", expanded=False):
-            safe_sql = entry.get("safe_sql") or entry.get("sql", "")
-            st.code(safe_sql[:300] + ("…" if len(safe_sql) > 300 else ""), language="sql")
-            st.caption(f"Grade: **{grade}** · {rows} rows · {ts}")
-            if st.button("↩ Load this question", key=f"load_{i}_{ts}"):
-                st.session_state.loaded_question = entry.get("question", "")
-                st.rerun()
+def render_guardrail_warnings(result: dict):
+    """Render guardrail violation banners."""
+    warnings = result.get("guardrail_warnings", [])
+    limit    = result.get("guardrail_limit_applied", False)
+    if limit:
+        st.info("🔒 Guardrail: LIMIT clause was automatically appended.")
+    if warnings:
+        for w in warnings:
+            st.warning(f"⚠️ Guardrail: {w}")
 
 
 # =========================================================
@@ -617,14 +874,15 @@ def render_history_sidebar(history: list):
 # =========================================================
 
 if not st.session_state.logged_in:
-    # Center the auth form
     col_l, col_c, col_r = st.columns([1, 2, 1])
     with col_c:
         st.markdown(
             "<div style='text-align:center; padding:40px 0 20px 0;'>"
             "<span style='font-size:3rem'>🗄️</span>"
-            "<h2 style='color:#a5b4fc; font-weight:700; margin-top:8px'>Text-to-SQL Explorer</h2>"
-            "<p style='color:#94a3b8; font-size:0.9rem'>Sign in or create an account to get started</p>"
+            "<h2 style='color:#a5b4fc; font-weight:700; margin-top:8px'>"
+            "Text-to-SQL Explorer</h2>"
+            "<p style='color:#94a3b8; font-size:0.9rem'>"
+            "Sign in or create an account to get started</p>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -633,9 +891,15 @@ if not st.session_state.logged_in:
 
         with auth_tab_login:
             with st.form("login_form"):
-                login_email = st.text_input("Email", placeholder="you@example.com", key="login_email")
-                login_pass  = st.text_input("Password", type="password", key="login_pass")
-                login_btn   = st.form_submit_button("Log In", use_container_width=True)
+                login_email = st.text_input(
+                    "Email", placeholder="you@example.com", key="login_email",
+                )
+                login_pass = st.text_input(
+                    "Password", type="password", key="login_pass",
+                )
+                login_btn = st.form_submit_button(
+                    "Log In", use_container_width=True,
+                )
 
             if login_btn:
                 if not login_email or not login_pass:
@@ -656,10 +920,18 @@ if not st.session_state.logged_in:
 
         with auth_tab_signup:
             with st.form("signup_form"):
-                signup_email = st.text_input("Email", placeholder="you@example.com", key="signup_email")
-                signup_pass  = st.text_input("Password", type="password", key="signup_pass")
-                signup_pass2 = st.text_input("Confirm Password", type="password", key="signup_pass2")
-                signup_btn   = st.form_submit_button("Create Account", use_container_width=True)
+                signup_email = st.text_input(
+                    "Email", placeholder="you@example.com", key="signup_email",
+                )
+                signup_pass = st.text_input(
+                    "Password", type="password", key="signup_pass",
+                )
+                signup_pass2 = st.text_input(
+                    "Confirm Password", type="password", key="signup_pass2",
+                )
+                signup_btn = st.form_submit_button(
+                    "Create Account", use_container_width=True,
+                )
 
             if signup_btn:
                 if not signup_email or not signup_pass:
@@ -678,11 +950,14 @@ if not st.session_state.logged_in:
                         st.session_state.user_email = data["email"]
                         st.session_state.user_role = data["role"]
                         st.session_state.logged_in = True
-                        st.success(f"✅ Account created! Welcome, {data['email']}!")
+                        st.success(
+                            f"✅ Account created! Welcome, {data['email']}!"
+                        )
                         time.sleep(0.5)
                         st.rerun()
 
     st.stop()
+
 
 # =========================================================
 # SIDEBAR (logged-in users only)
@@ -691,8 +966,10 @@ if not st.session_state.logged_in:
 with st.sidebar:
     # Logo / title
     st.markdown(
-        "<h2 style='color:#a5b4fc; font-weight:700; margin-bottom:0'>🗄️ Text-to-SQL</h2>"
-        "<p style='color:#64748b; font-size:0.8rem; margin-top:2px'>Powered by Groq LLM</p>",
+        "<h2 style='color:#a5b4fc; font-weight:700; margin-bottom:0'>"
+        "🗄️ Text-to-SQL</h2>"
+        "<p style='color:#64748b; font-size:0.8rem; margin-top:2px'>"
+        "Powered by Groq LLM</p>",
         unsafe_allow_html=True,
     )
     st.divider()
@@ -711,24 +988,65 @@ with st.sidebar:
     )
 
     if st.button("🚪 Logout", use_container_width=True):
-        for k in ["token", "user_id", "user_email", "logged_in",
-                  "connections", "active_connection_id", "active_connection_name",
-                  "result", "history"]:
-            st.session_state[k] = None if k != "logged_in" else False
-            if k == "history":
+        for k in [
+            "token", "user_id", "user_email", "logged_in",
+            "connections", "active_connection_id", "active_connection_name",
+            "messages", "detail_result", "current_page",
+        ]:
+            if k == "logged_in":
+                st.session_state[k] = False
+            elif k in ("messages", "connections"):
                 st.session_state[k] = []
+            elif k == "current_page":
+                st.session_state[k] = "chat"
+            else:
+                st.session_state[k] = None
         st.rerun()
+
+    st.divider()
+
+    # ── Page Navigation ───────────────────────────────────
+    st.markdown(
+        "<p class='section-label'>Navigation</p>",
+        unsafe_allow_html=True,
+    )
+    nav_col1, nav_col2, nav_col3 = st.columns(3)
+    with nav_col1:
+        if st.button(
+            "💬 Chat",
+            use_container_width=True,
+            key="nav_chat",
+        ):
+            st.session_state.current_page = "chat"
+            st.rerun()
+    with nav_col2:
+        if st.button(
+            "📊 Details",
+            use_container_width=True,
+            key="nav_details",
+        ):
+            st.session_state.current_page = "details"
+            st.rerun()
+    with nav_col3:
+        if st.session_state.user_role == "admin":
+            if st.button(
+                "📋 Audit",
+                use_container_width=True,
+                key="nav_audit",
+            ):
+                st.session_state.current_page = "audit"
+                st.rerun()
 
     st.divider()
 
     # ── Database Connections ──────────────────────────────
     with st.expander("🔌 Database Connections", expanded=True):
-        # Load connections
         conns_data, conns_err = api_list_connections()
-        connections = conns_data.get("connections", []) if conns_data else []
+        connections = (
+            conns_data.get("connections", []) if conns_data else []
+        )
         st.session_state.connections = connections
 
-        # Active connection selector
         conn_options = [{"id": None, "label": "📦 Default (college_2)"}]
         for c in connections:
             tbl_count = c.get("table_count", 0)
@@ -757,27 +1075,40 @@ with st.sidebar:
         st.divider()
 
         # Connect new database form
-        st.markdown("<p style='font-size:0.82rem; color:#94a3b8; font-weight:600;'>Connect New Database</p>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='font-size:0.82rem; color:#94a3b8; font-weight:600;'>"
+            "Connect New Database</p>",
+            unsafe_allow_html=True,
+        )
         with st.form("connect_db_form"):
-            c_name = st.text_input("Connection Name", placeholder="My Database")
+            c_name = st.text_input(
+                "Connection Name", placeholder="My Database",
+            )
             c_host = st.text_input("Host", value="localhost")
-            c_port = st.number_input("Port", value=5432, min_value=1, max_value=65535)
-            c_db   = st.text_input("Database Name", placeholder="my_database")
+            c_port = st.number_input(
+                "Port", value=5432, min_value=1, max_value=65535,
+            )
+            c_db = st.text_input(
+                "Database Name", placeholder="my_database",
+            )
             c_user = st.text_input("Username", value="postgres")
             c_pass = st.text_input("Password", type="password")
-            connect_btn = st.form_submit_button("🔗 Connect & Extract Schema", use_container_width=True)
+            connect_btn = st.form_submit_button(
+                "🔗 Connect & Extract Schema", use_container_width=True,
+            )
 
         if connect_btn:
             if not all([c_name, c_host, c_db, c_user, c_pass]):
                 st.error("All fields are required.")
             else:
                 with st.spinner("Connecting and extracting schema..."):
-                    data, err = api_connect_db(c_name, c_host, c_port, c_db, c_user, c_pass)
+                    data, err = api_connect_db(
+                        c_name, c_host, c_port, c_db, c_user, c_pass,
+                    )
                 if err:
                     st.error(f"❌ {err}")
                 elif data:
                     st.success(f"✅ {data.get('message', 'Connected!')}")
-                    # Auto-select the new connection
                     st.session_state.active_connection_id = data["id"]
                     time.sleep(0.5)
                     st.rerun()
@@ -789,11 +1120,15 @@ with st.sidebar:
                 col1, col2 = st.columns([3, 1])
                 with col1:
                     st.caption(f"🗄 {c['connection_name']}")
-                    st.caption(f"{c['host']}:{c['port']}/{c['database_name']}")
+                    st.caption(
+                        f"{c['host']}:{c['port']}/{c['database_name']}",
+                    )
                 with col2:
                     if st.button("🗑️", key=f"del_{c['id']}"):
                         api_delete_connection(c["id"])
-                        if st.session_state.active_connection_id == c["id"]:
+                        if (
+                            st.session_state.active_connection_id == c["id"]
+                        ):
                             st.session_state.active_connection_id = None
                         st.rerun()
 
@@ -823,381 +1158,611 @@ with st.sidebar:
                 with st.expander(f"📋 {tname}", expanded=False):
                     for c in cols:
                         st.markdown(
-                            f"<span style='color:#6366f1; font-family:monospace; font-size:0.82rem'>"
+                            f"<span style='color:#6366f1; "
+                            f"font-family:monospace; font-size:0.82rem'>"
                             f"{c['name']}</span>"
-                            f"<span style='color:#475569; font-size:0.78rem'> · {c['type']}</span>",
+                            f"<span style='color:#475569; "
+                            f"font-size:0.78rem'> · {c['type']}</span>",
                             unsafe_allow_html=True,
                         )
 
-    st.divider()
-
-    # History
-    st.markdown("<p class='section-label'>Query History</p>", unsafe_allow_html=True)
-    hist_data, hist_err = api_history()
-    if hist_err:
-        st.caption(f"History unavailable: {hist_err}")
-        history_entries = []
-    else:
-        history_entries = hist_data.get("queries", []) if hist_data else []
-
-    render_history_sidebar(history_entries)
 
 # =========================================================
-# MAIN PANEL
+# PAGE ROUTER
 # =========================================================
 
-# Hero header
-st.markdown(
-    "<h1 class='hero-header'>Text-to-SQL Explorer</h1>"
-    "<p class='hero-sub'>Ask questions in plain English — get instant SQL, results, and confidence signals.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+page = st.session_state.current_page
 
-# ── Question Input ─────────────────────────────────────────────────────
-st.markdown("<div class='card'>", unsafe_allow_html=True)
-st.markdown("<p class='section-label'>Ask a Question</p>", unsafe_allow_html=True)
 
-# Pre-fill from history click
-if st.session_state.loaded_question:
-    st.session_state.question = st.session_state.loaded_question
-    st.session_state.loaded_question = None
+# =========================================================
+# PAGE: CHAT  (main conversational interface)
+# =========================================================
 
-question = st.text_area(
-    label="question_input",
-    label_visibility="collapsed",
-    value=st.session_state.question,
-    placeholder="e.g. How many students are enrolled in each department?",
-    height=90,
-    key="question_input",
-)
+if page == "chat":
 
-col_btn1, col_btn2, col_spacer = st.columns([1.2, 1.2, 6])
-run_btn   = col_btn1.button("▶ Run Query", type="primary", use_container_width=True)
-clear_btn = col_btn2.button("🗑 Clear", use_container_width=True)
-
-if clear_btn:
-    st.session_state.result               = None
-    st.session_state.question             = ""
-    st.session_state.last_sql             = ""
-    st.session_state.pending_confirmation = False
-    st.session_state.confirmed            = False
-    st.rerun()
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-# ── Run pipeline ──────────────────────────────────────────────────────
-if run_btn and question.strip():
-    st.session_state.question             = question.strip()
-    st.session_state.pending_confirmation = False
-    st.session_state.confirmed            = False
-    with st.spinner("⏳ Running pipeline — generating SQL, executing, verifying…"):
-        data, err = api_query(question.strip(), confirmed=False)
-
-    if err:
-        st.error(f"❌ {err}")
-        st.session_state.result = None
-    else:
-        st.session_state.result   = data
-        st.session_state.last_sql = data.get("safe_sql", "")
-        # If the response comes back with a non-safe risk level and
-        # execution was not yet done, flag for confirmation.
-        risk = data.get("risk_level", "safe")
-        if risk in ("moderate", "risky") and not data.get("execution_results") and not data.get("dataframe"):
-            st.session_state.pending_confirmation = True
-
-# ── Display results ────────────────────────────────────────────────────
-result = st.session_state.result
-
-if result:
-
-    # ── Clarification needed ────────────────────────────────────────
-    if result.get("needs_clarification"):
-        cr   = result.get("clarification_request", {})
-        msg  = cr.get("message", "Please clarify your question.")
-        opts = cr.get("interpretations", [])
-
-        st.warning(f"🤔 **Clarification Required**\n\n{msg}")
-        if opts:
-            choices = [o.get("example_query", o.get("label", "")) for o in opts]
-            chosen  = st.radio("Choose an interpretation:", choices, index=0)
-            if st.button("Submit clarification"):
-                st.session_state.question = chosen
-                st.rerun()
-        st.stop()
-
-    # ── Hard-blocked query (deep subquery / expensive scan) ─────────
-    if not result.get("guardrail_allowed", True):
-        risk_warning = result.get("risk_warning", "")
-        st.markdown(
-            f"""
-            <div class='risk-banner risk-risky'>
-                <span class='risk-badge risk-badge-risky'>🚫 Hard Block</span>
-                <p class='risk-warning-text'>{risk_warning or 'This query has been permanently blocked by safety guardrails.'}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        for v in result.get("guardrail_warnings", []):
-            st.markdown(
-                f"<div class='anomaly-error'><strong>❌ Violation:</strong> "
-                f"<span style='color:#fca5a5'>{v}</span></div>",
-                unsafe_allow_html=True,
-            )
-        with st.expander("📝 View raw SQL", expanded=False):
-            st.code(result.get("sql", ""), language="sql")
-        st.stop()
-
-    # ── Risk Warning — SAFE write (informational, no gate) ──────────
-    risk_level   = result.get("risk_level", "safe")
-    risk_warning = result.get("risk_warning", "")
-
-    if risk_level == "safe" and risk_warning:
-        st.markdown(
-            f"""
-            <div class='risk-banner risk-safe'>
-                <span class='risk-badge risk-badge-safe'>🟢 Safe — Low-Risk Write</span>
-                <p class='risk-warning-text'>{risk_warning}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    # ── Risk Warning — MODERATE / RISKY (requires confirmation) ─────
-    elif risk_level in ("moderate", "risky") and st.session_state.get("pending_confirmation"):
-        badge_cfg = {
-            "moderate": ("risk-moderate", "risk-badge-moderate", "🟡 Moderate Risk"),
-            "risky":    ("risk-risky",    "risk-badge-risky",    "🔴 High Risk"),
-        }
-        banner_cls, badge_cls, badge_label = badge_cfg[risk_level]
-
-        st.markdown(
-            f"""
-            <div class='risk-banner {banner_cls}'>
-                <span class='risk-badge {badge_cls}'>{badge_label}</span>
-                <p class='risk-warning-text'>{risk_warning}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        with st.expander("📝 Preview SQL that will execute", expanded=True):
-            st.code(result.get("safe_sql") or result.get("sql", ""), language="sql")
-
-        st.markdown(
-            "<p style='color:#94a3b8; font-size:0.88rem; margin-bottom:12px'>"
-            "Are you sure you want to execute this query against your database?"
-            "</p>",
-            unsafe_allow_html=True,
-        )
-
-        col_confirm, col_cancel, _ = st.columns([1.6, 1, 5])
-        confirm_btn = col_confirm.button(
-            "✅ Yes, Execute Anyway", type="primary",
-            use_container_width=True, key="risk_confirm",
-        )
-        cancel_btn = col_cancel.button(
-            "❌ Cancel", use_container_width=True, key="risk_cancel",
-        )
-
-        if cancel_btn:
-            st.session_state.result               = None
-            st.session_state.pending_confirmation = False
-            st.session_state.confirmed            = False
-            st.rerun()
-
-        if confirm_btn:
-            st.session_state.pending_confirmation = False
-            st.session_state.confirmed            = True
-            with st.spinner("⏳ Executing confirmed query…"):
-                data, err = api_query(
-                    st.session_state.question,
-                    confirmed=True,
-                )
-            if err:
-                st.error(f"❌ {err}")
-            else:
-                st.session_state.result   = data
-                st.session_state.last_sql = data.get("safe_sql", "")
-            st.rerun()
-
-        st.stop()
-
-    # ── Pipeline error ──────────────────────────────────────────────
-    if result.get("error"):
-        st.error(f"❌ Pipeline error: {result['error']}")
-        st.stop()
-
-    # ── Tabs layout ─────────────────────────────────────────────────
-    tab_names = ["📝 SQL", "📊 Results", "🎯 Confidence", "🔁 Verification"]
-    if st.session_state.user_role == "admin":
-        tab_names.append("📋 Audit Log")
-
-    tabs = st.tabs(tab_names)
-    tab_sql, tab_results, tab_confidence, tab_verify = tabs[0], tabs[1], tabs[2], tabs[3]
-    tab_audit = tabs[4] if len(tabs) > 4 else None
-
-    # ─── TAB 1: SQL ─────────────────────────────────────────────────
-    with tab_sql:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        render_guardrail_warnings(result)
-
-        edited_sql = render_sql_editor(result.get("safe_sql", ""))
-        st.session_state.last_sql = edited_sql
-
-        # SQL validation status
-        col_v1, col_v2 = st.columns([1, 5])
-        if result.get("sql_valid"):
-            col_v1.success("✅ Valid SQL")
-        else:
-            col_v1.error("❌ Invalid SQL")
-        col_v2.caption(result.get("validation_message", ""))
-
-        # Metadata
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            st.markdown("<p class='section-label'>Tables Accessed</p>", unsafe_allow_html=True)
-            for t in result.get("tables_accessed", []):
-                st.markdown(
-                    f"<code style='background:#1e3a5f; color:#93c5fd; padding:2px 8px; border-radius:4px; font-size:0.82rem'>{t}</code> ",
-                    unsafe_allow_html=True,
-                )
-        with col_m2:
-            st.markdown("<p class='section-label'>Columns Accessed</p>", unsafe_allow_html=True)
-            cols_str = ", ".join(
-                f"{c['table']}.{c['column']}"
-                for c in result.get("columns_accessed", [])
-            )
-            st.caption(cols_str or "—")
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Explanation
-        with st.expander("💬 Query Explanation", expanded=True):
-            st.markdown(
-                f"<p style='color:#cbd5e1; font-size:0.92rem; line-height:1.6'>"
-                f"{result.get('explanation', '—')}</p>",
-                unsafe_allow_html=True,
-            )
-
-    # ─── TAB 2: RESULTS ─────────────────────────────────────────────
-    with tab_results:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        render_results(result)
-        st.markdown("</div>", unsafe_allow_html=True)
-        render_sanity(result)
-
-    # ─── TAB 3: CONFIDENCE ──────────────────────────────────────────
-    with tab_confidence:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        conf = result.get("confidence", {})
-        if conf:
-            render_confidence(conf)
-        else:
-            st.info("No confidence data available.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Signal detail table
-        if conf:
-            bd = conf.get("signal_breakdown", {})
-            wd = conf.get("weighted_breakdown", {})
-            max_pts = {"syntax_validity": 20, "back_translation": 35,
-                       "sanity_pass_rate": 30, "schema_coverage": 15}
-            labels  = {"syntax_validity": "Syntax Validity",
-                       "back_translation": "Back-Translation Alignment",
-                       "sanity_pass_rate": "Sanity Check Pass Rate",
-                       "schema_coverage": "Schema Coverage"}
-
-            rows_conf = []
-            for k, lbl in labels.items():
-                raw = bd.get(k, 0)
-                mx  = max_pts[k]
-                # Earned points = raw signal score × max points
-                rows_conf.append({
-                    "Signal":      lbl,
-                    "Raw Score":   f"{raw:.0%}",
-                    "Weight":      f"{mx}%",
-                    "Points":      f"{round(raw * mx)} / {mx}",
-                    "Status":      "✅ Good" if raw >= 0.70 else "🟡 Fair" if raw >= 0.40 else "❌ Poor",
-                })
-            st.dataframe(
-                pd.DataFrame(rows_conf),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    # ─── TAB 4: VERIFICATION ────────────────────────────────────────
-    with tab_verify:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.markdown("<p class='section-label'>SQL-to-Question Back-Translation</p>", unsafe_allow_html=True)
-        st.markdown(
-            f"<p style='color:#94a3b8; font-size:0.82rem; margin-bottom:12px'>"
-            f"The generated SQL was sent back to the LLM asking "
-            f"<em>\"What question does this SQL answer?\"</em> — "
-            f"the result is compared to your original question.</p>",
-            unsafe_allow_html=True,
-        )
-        render_verification(result)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # ─── TAB 5: AUDIT LOG (Admin only) ──────────────────────────────
-    if tab_audit is not None:
-        with tab_audit:
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<p class='section-label'>Audit Log — Recent Activity</p>", unsafe_allow_html=True)
-            st.markdown(
-                "<p style='color:#94a3b8; font-size:0.82rem; margin-bottom:12px'>"
-                "Full audit trail of all query executions across users and roles.</p>",
-                unsafe_allow_html=True,
-            )
-
-            audit_data, audit_err = api_audit(limit=50)
-            if audit_err:
-                st.error(f"❌ {audit_err}")
-            elif audit_data:
-                records = audit_data.get("records", [])
-                total   = audit_data.get("total_records", 0)
-
-                if records:
-                    st.caption(f"Showing {len(records)} of {total} records (newest first)")
-
-                    # Format for display
-                    display_rows = []
-                    for rec in records:
-                        role_icons = {"viewer": "👁️", "editor": "✏️", "admin": "🛡️"}
-                        r = rec.get("role", "")
-                        display_rows.append({
-                            "Time":       str(rec.get("timestamp", ""))[:19].replace("T", " "),
-                            "User":       rec.get("user_id", ""),
-                            "Role":       f"{role_icons.get(r, '')} {r}",
-                            "Question":   (rec.get("question", "") or "")[:60],
-                            "SQL":        (rec.get("safe_sql", "") or rec.get("generated_sql", "") or "")[:60],
-                            "Time (ms)":  round(rec.get("execution_time_ms", 0), 1),
-                            "Rows":       rec.get("row_count", 0),
-                            "Affected":   rec.get("rows_affected", 0),
-                            "Success":    "✅" if rec.get("success") else "❌",
-                            "Risk":       rec.get("risk_level", ""),
-                            "Permitted":  "✅" if rec.get("permission_granted") else "🚫",
-                        })
-
-                    st.dataframe(
-                        pd.DataFrame(display_rows),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=400,
-                    )
-                else:
-                    st.info("No audit records found.")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-elif not run_btn:
-    # Empty state
+    # Hero header
     st.markdown(
-        "<div style='text-align:center; padding: 80px 0; color:#334155'>"
-        "<div style='font-size:3.5rem'>🗄️</div>"
-        "<h3 style='color:#475569; font-weight:500; margin-top:12px'>Ready to query</h3>"
-        "<p style='color:#374151; font-size:0.9rem'>Type a question above and hit <strong>▶ Run Query</strong></p>"
-        "</div>",
+        "<h1 class='hero-header'>Text-to-SQL Explorer</h1>"
+        "<p class='hero-sub'>Ask questions in plain English — "
+        "get instant SQL, results, and confidence signals.</p>",
         unsafe_allow_html=True,
     )
-    
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    # ── Render chat history ─────────────────────────────────────────
+    for i, msg in enumerate(st.session_state.messages):
+        with st.chat_message(msg["role"]):
+            if msg["role"] == "user":
+                st.markdown(msg["content"])
+            else:
+                # ─── Assistant message rendering ────────────────────
+                # Error message
+                if msg.get("error"):
+                    st.error(msg["content"])
+                    continue
+
+                # Clarification needed
+                if msg.get("needs_clarification"):
+                    cr = msg.get("clarification_data", {})
+                    st.warning(
+                        f"🤔 **Clarification Required**\n\n{msg['content']}"
+                    )
+                    opts = cr.get("interpretations", [])
+                    if opts:
+                        choices = [
+                            o.get("example_query", o.get("label", ""))
+                            for o in opts
+                        ]
+                        chosen = st.radio(
+                            "Choose an interpretation:",
+                            choices,
+                            index=0,
+                            key=f"clarify_radio_{i}",
+                        )
+                        if st.button(
+                            "Submit clarification",
+                            key=f"clarify_submit_{i}",
+                        ):
+                            # Re-submit with the chosen interpretation
+                            st.session_state.messages.append(
+                                {"role": "user", "content": chosen}
+                            )
+                            conv_history = _build_conv_history()
+                            with st.spinner("⏳ Generating SQL..."):
+                                data, err = api_query(
+                                    chosen,
+                                    confirmed=False,
+                                    conversation_history=conv_history,
+                                )
+                            _process_api_response(data, err, chosen)
+                            st.rerun()
+                    continue
+
+                # Show explanation
+                if msg.get("content"):
+                    st.markdown(
+                        f"💬 {msg['content']}",
+                    )
+
+                # Show SQL
+                sql = msg.get("sql", "")
+                if sql:
+                    # Check if we're editing this message
+                    if st.session_state.editing_msg_idx == i:
+                        _render_edit_mode(i, msg)
+                    else:
+                        st.code(sql, language="sql")
+
+                # Blocked query
+                if msg.get("blocked"):
+                    st.markdown(
+                        "<div class='risk-banner risk-risky'>"
+                        "<span class='risk-badge risk-badge-risky'>"
+                        "🚫 Hard Block</span>"
+                        "<p class='risk-warning-text'>"
+                        "This query was blocked by safety guardrails."
+                        "</p></div>",
+                        unsafe_allow_html=True,
+                    )
+                    result_data = msg.get("result", {})
+                    for v in result_data.get("guardrail_warnings", []):
+                        st.markdown(
+                            f"<div class='anomaly-error'>"
+                            f"<strong>❌ Violation:</strong> "
+                            f"<span style='color:#fca5a5'>{v}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                    continue
+
+                # Risk confirmation needed
+                if msg.get("needs_confirmation") and not msg.get("executed"):
+                    result_data = msg.get("result", {})
+                    risk_level = result_data.get("risk_level", "moderate")
+                    risk_warning = result_data.get("risk_warning", "")
+                    badge_cfg = {
+                        "moderate": (
+                            "risk-moderate",
+                            "risk-badge-moderate",
+                            "🟡 Moderate Risk",
+                        ),
+                        "risky": (
+                            "risk-risky",
+                            "risk-badge-risky",
+                            "🔴 High Risk",
+                        ),
+                    }
+                    banner_cls, badge_cls, badge_label = badge_cfg.get(
+                        risk_level,
+                        badge_cfg["moderate"],
+                    )
+
+                    st.markdown(
+                        f"<div class='risk-banner {banner_cls}'>"
+                        f"<span class='risk-badge {badge_cls}'>"
+                        f"{badge_label}</span>"
+                        f"<p class='risk-warning-text'>{risk_warning}</p>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    col_confirm, col_cancel, _ = st.columns([1.6, 1, 5])
+                    if col_confirm.button(
+                        "✅ Execute Anyway",
+                        type="primary",
+                        key=f"risk_confirm_{i}",
+                        use_container_width=True,
+                    ):
+                        with st.spinner("⏳ Executing confirmed query…"):
+                            data, err = api_execute_sql(
+                                sql=sql,
+                                question=msg.get("original_question", ""),
+                                confirmed=True,
+                            )
+                        if err:
+                            st.error(f"❌ {err}")
+                        elif data:
+                            msg["result"] = data
+                            msg["executed"] = True
+                            msg["needs_confirmation"] = False
+                        st.rerun()
+
+                    if col_cancel.button(
+                        "❌ Cancel",
+                        key=f"risk_cancel_{i}",
+                        use_container_width=True,
+                    ):
+                        msg["cancelled"] = True
+                        msg["needs_confirmation"] = False
+                        st.rerun()
+                    continue
+
+                # ── Executed state ─────────────────────────────────
+                if msg.get("executed"):
+                    result_data = msg.get("result", {})
+                    row_count = result_data.get("row_count", 0)
+                    exec_ms = result_data.get("execution_time_ms", 0)
+                    exec_err = result_data.get("execution_error")
+                    rows_affected = result_data.get("rows_affected", 0)
+
+                    if exec_err:
+                        st.error(f"❌ Execution error: {exec_err}")
+                    else:
+                        # Build summary text
+                        summary_parts = [f"{row_count} row(s) returned"]
+                        if exec_ms:
+                            summary_parts.append(f"{exec_ms:.1f}ms")
+                        if rows_affected:
+                            summary_parts.append(
+                                f"{rows_affected} row(s) affected"
+                            )
+
+                        st.markdown(
+                            f"<div class='executed-badge'>"
+                            f"✅ Executed — {' · '.join(summary_parts)}"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    col1, col2, _ = st.columns([1, 1, 3])
+                    if col1.button(
+                        "📊 View Details",
+                        key=f"details_{i}",
+                    ):
+                        st.session_state.detail_result = result_data
+                        st.session_state.current_page = "details"
+                        st.rerun()
+
+                    if (
+                        not st.session_state.editing_msg_idx == i
+                        and col2.button(
+                            "✏️ Edit SQL", key=f"edit_btn_{i}",
+                        )
+                    ):
+                        st.session_state.editing_msg_idx = i
+                        st.session_state.edit_sql = sql
+                        st.session_state.validation_result = None
+                        st.rerun()
+
+                # ── Not yet executed — show Execute button ─────────
+                elif not msg.get("needs_confirmation") and not msg.get(
+                    "blocked"
+                ) and not msg.get("cancelled") and sql:
+                    col1, col2, _ = st.columns([1, 1, 3])
+                    if col1.button(
+                        "▶ Execute",
+                        key=f"exec_{i}",
+                        type="primary",
+                    ):
+                        with st.spinner("⏳ Executing query…"):
+                            data, err = api_execute_sql(
+                                sql=sql,
+                                question=msg.get(
+                                    "original_question", ""
+                                ),
+                                confirmed=False,
+                            )
+                        if err:
+                            st.error(f"❌ {err}")
+                        elif data:
+                            # Check if needs risk confirmation
+                            risk = data.get("risk_level", "safe")
+                            has_results = bool(
+                                data.get("execution_results")
+                                or data.get("dataframe")
+                            )
+                            if risk in ("moderate", "risky") and not has_results:
+                                msg["needs_confirmation"] = True
+                                msg["result"] = data
+                            else:
+                                msg["executed"] = True
+                                msg["result"] = data
+                        st.rerun()
+
+                    if (
+                        not st.session_state.editing_msg_idx == i
+                        and col2.button(
+                            "✏️ Edit SQL", key=f"edit_btn2_{i}",
+                        )
+                    ):
+                        st.session_state.editing_msg_idx = i
+                        st.session_state.edit_sql = sql
+                        st.session_state.validation_result = None
+                        st.rerun()
+
+    # ── Chat input ──────────────────────────────────────────────────
+    if prompt := st.chat_input(
+        "Ask about your database…  e.g. 'How many students per department?'"
+    ):
+        # Add user message
+        st.session_state.messages.append(
+            {"role": "user", "content": prompt}
+        )
+
+        # Build conversation history for context
+        conv_history = _build_conv_history()
+
+        # Call API
+        with st.spinner("⏳ Running pipeline — generating SQL…"):
+            data, err = api_query(
+                prompt,
+                confirmed=False,
+                conversation_history=conv_history,
+            )
+
+        _process_api_response(data, err, prompt)
+        st.rerun()
+
+    # Empty state
+    if not st.session_state.messages:
+        st.markdown(
+            "<div style='text-align:center; padding: 80px 0; "
+            "color:#334155'>"
+            "<div style='font-size:3.5rem'>🗄️</div>"
+            "<h3 style='color:#475569; font-weight:500; "
+            "margin-top:12px'>Ready to query</h3>"
+            "<p style='color:#374151; font-size:0.9rem'>"
+            "Type a question below to get started</p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+# =========================================================
+# PAGE: DETAILS  (results, confidence, verification, sanity)
+# =========================================================
+
+elif page == "details":
+
+    # Back button
+    if st.button("← Back to Chat", key="back_to_chat"):
+        st.session_state.current_page = "chat"
+        st.rerun()
+
+    st.markdown(
+        "<h1 class='hero-header'>Results & Analysis</h1>"
+        "<p class='hero-sub'>Detailed breakdown of the query execution, "
+        "confidence signals, and verification.</p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    result = st.session_state.detail_result
+
+    if not result:
+        st.info(
+            "ℹ️ No query results to display. Run a query in the Chat "
+            "and click **📊 View Details** to see the full analysis."
+        )
+    else:
+        # ── Tabs layout ────────────────────────────────────────────
+        tab_names = [
+            "📊 Results",
+            "📝 SQL Details",
+            "🎯 Confidence",
+            "🔁 Verification",
+        ]
+        tabs = st.tabs(tab_names)
+
+        # ─── TAB 1: RESULTS ────────────────────────────────────────
+        with tabs[0]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+
+            # Query info
+            question = result.get("question", "")
+            if question:
+                st.markdown(
+                    f"<p class='section-label'>Original Question</p>"
+                    f"<p style='color:#e2e8f0; font-size:0.95rem; "
+                    f"font-style:italic'>\"{question}\"</p>",
+                    unsafe_allow_html=True,
+                )
+                st.divider()
+
+            render_results(result)
+            st.markdown("</div>", unsafe_allow_html=True)
+            render_sanity(result)
+
+        # ─── TAB 2: SQL DETAILS ────────────────────────────────────
+        with tabs[1]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            render_guardrail_warnings(result)
+
+            st.markdown(
+                "<p class='section-label'>Executed SQL</p>",
+                unsafe_allow_html=True,
+            )
+            st.code(
+                result.get("safe_sql", result.get("sql", "")),
+                language="sql",
+            )
+
+            # SQL validation status
+            col_v1, col_v2 = st.columns([1, 5])
+            if result.get("sql_valid"):
+                col_v1.success("✅ Valid SQL")
+            else:
+                col_v1.error("❌ Invalid SQL")
+            col_v2.caption(result.get("validation_message", ""))
+
+            # Metadata
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.markdown(
+                    "<p class='section-label'>Tables Accessed</p>",
+                    unsafe_allow_html=True,
+                )
+                for t in result.get("tables_accessed", []):
+                    st.markdown(
+                        f"<code style='background:#1e3a5f; color:#93c5fd; "
+                        f"padding:2px 8px; border-radius:4px; "
+                        f"font-size:0.82rem'>{t}</code> ",
+                        unsafe_allow_html=True,
+                    )
+            with col_m2:
+                st.markdown(
+                    "<p class='section-label'>Columns Accessed</p>",
+                    unsafe_allow_html=True,
+                )
+                cols_str = ", ".join(
+                    f"{c['table']}.{c['column']}"
+                    for c in result.get("columns_accessed", [])
+                )
+                st.caption(cols_str or "—")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # Explanation
+            with st.expander("💬 Query Explanation", expanded=True):
+                st.markdown(
+                    f"<p style='color:#cbd5e1; font-size:0.92rem; "
+                    f"line-height:1.6'>"
+                    f"{result.get('explanation', '—')}</p>",
+                    unsafe_allow_html=True,
+                )
+
+            # Risk info
+            risk_level = result.get("risk_level", "safe")
+            risk_warning = result.get("risk_warning", "")
+            if risk_warning:
+                badge_cfg = {
+                    "safe": (
+                        "risk-safe", "risk-badge-safe",
+                        "🟢 Safe",
+                    ),
+                    "moderate": (
+                        "risk-moderate", "risk-badge-moderate",
+                        "🟡 Moderate Risk",
+                    ),
+                    "risky": (
+                        "risk-risky", "risk-badge-risky",
+                        "🔴 High Risk",
+                    ),
+                }
+                banner_cls, badge_cls, badge_label = badge_cfg.get(
+                    risk_level, badge_cfg["safe"]
+                )
+                st.markdown(
+                    f"<div class='risk-banner {banner_cls}'>"
+                    f"<span class='risk-badge {badge_cls}'>"
+                    f"{badge_label}</span>"
+                    f"<p class='risk-warning-text'>{risk_warning}</p>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        # ─── TAB 3: CONFIDENCE ─────────────────────────────────────
+        with tabs[2]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            conf = result.get("confidence", {})
+            if conf:
+                render_confidence(conf)
+            else:
+                st.info("No confidence data available.")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # Signal detail table
+            if conf:
+                bd = conf.get("signal_breakdown", {})
+                max_pts = {
+                    "syntax_validity": 20,
+                    "back_translation": 35,
+                    "sanity_pass_rate": 30,
+                    "schema_coverage": 15,
+                }
+                labels = {
+                    "syntax_validity": "Syntax Validity",
+                    "back_translation": "Back-Translation Alignment",
+                    "sanity_pass_rate": "Sanity Check Pass Rate",
+                    "schema_coverage": "Schema Coverage",
+                }
+
+                rows_conf = []
+                for k, lbl in labels.items():
+                    raw = bd.get(k, 0)
+                    mx = max_pts[k]
+                    rows_conf.append({
+                        "Signal":    lbl,
+                        "Raw Score": f"{raw:.0%}",
+                        "Weight":    f"{mx}%",
+                        "Points":    f"{round(raw * mx)} / {mx}",
+                        "Status": (
+                            "✅ Good" if raw >= 0.70
+                            else "🟡 Fair" if raw >= 0.40
+                            else "❌ Poor"
+                        ),
+                    })
+                st.dataframe(
+                    pd.DataFrame(rows_conf),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        # ─── TAB 4: VERIFICATION ───────────────────────────────────
+        with tabs[3]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown(
+                "<p class='section-label'>"
+                "SQL-to-Question Back-Translation</p>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<p style='color:#94a3b8; font-size:0.82rem; "
+                "margin-bottom:12px'>"
+                "The generated SQL was sent back to the LLM asking "
+                "<em>\"What question does this SQL answer?\"</em> — "
+                "the result is compared to your original question.</p>",
+                unsafe_allow_html=True,
+            )
+            render_verification(result)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================================================
+# PAGE: AUDIT LOG  (admin only)
+# =========================================================
+
+elif page == "audit":
+
+    # Back button
+    if st.button("← Back to Chat", key="back_to_chat_audit"):
+        st.session_state.current_page = "chat"
+        st.rerun()
+
+    st.markdown(
+        "<h1 class='hero-header'>Audit Log</h1>"
+        "<p class='hero-sub'>Full audit trail of all query executions "
+        "across users and roles.</p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    if st.session_state.user_role != "admin":
+        st.error(
+            "🚫 Access denied. Only admin users can view the audit log."
+        )
+    else:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        audit_data, audit_err = api_audit(limit=50)
+        if audit_err:
+            st.error(f"❌ {audit_err}")
+        elif audit_data:
+            records = audit_data.get("records", [])
+            total = audit_data.get("total_records", 0)
+
+            if records:
+                st.caption(
+                    f"Showing {len(records)} of {total} records "
+                    f"(newest first)"
+                )
+
+                display_rows = []
+                for rec in records:
+                    r_icons = {
+                        "viewer": "👁️",
+                        "editor": "✏️",
+                        "admin": "🛡️",
+                    }
+                    r = rec.get("role", "")
+                    display_rows.append({
+                        "Time": (
+                            str(rec.get("timestamp", ""))[:19]
+                            .replace("T", " ")
+                        ),
+                        "User": rec.get("user_id", ""),
+                        "Role": f"{r_icons.get(r, '')} {r}",
+                        "Question": (
+                            (rec.get("question", "") or "")[:60]
+                        ),
+                        "SQL": (
+                            (
+                                rec.get("safe_sql", "")
+                                or rec.get("generated_sql", "")
+                                or ""
+                            )[:60]
+                        ),
+                        "Time (ms)": round(
+                            rec.get("execution_time_ms", 0), 1,
+                        ),
+                        "Rows": rec.get("row_count", 0),
+                        "Affected": rec.get("rows_affected", 0),
+                        "Success": (
+                            "✅" if rec.get("success") else "❌"
+                        ),
+                        "Risk": rec.get("risk_level", ""),
+                        "Permitted": (
+                            "✅" if rec.get("permission_granted")
+                            else "🚫"
+                        ),
+                    })
+
+                st.dataframe(
+                    pd.DataFrame(display_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400,
+                )
+            else:
+                st.info("No audit records found.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
