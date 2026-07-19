@@ -265,10 +265,18 @@ def _init_state():
         "history":              [],
         "schema":               None,
         "last_sql":             "",
-        "pending_confirmation": False,   # True when awaiting user risk-confirm
-        "confirmed":            False,   # True after user clicks confirm
+        "pending_confirmation": False,
+        "confirmed":            False,
+        # Auth
+        "token":                None,
+        "user_id":              None,
+        "user_email":           None,
         "user_role":            "viewer",
-        "user_id":              "anonymous",
+        "logged_in":            False,
+        # Connections
+        "connections":          [],
+        "active_connection_id": None,
+        "active_connection_name": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -280,19 +288,17 @@ _init_state()
 # API HELPERS
 # =========================================================
 
-def _rbac_headers() -> dict:
-    """Return RBAC headers for API requests."""
-    return {
-        "X-User-Id":   st.session_state.user_id,
-        "X-User-Role": st.session_state.user_role,
-    }
+def _auth_headers() -> dict:
+    """Return JWT auth headers for API requests."""
+    if st.session_state.token:
+        return {"Authorization": f"Bearer {st.session_state.token}"}
+    return {}
 
 
 def _api(method: str, path: str, **kwargs):
     base = st.session_state.api_base.rstrip("/")
-    # Merge RBAC headers with any user-provided headers
     headers = kwargs.pop("headers", {})
-    headers.update(_rbac_headers())
+    headers.update(_auth_headers())
     try:
         r = httpx.request(
             method, f"{base}{path}",
@@ -303,18 +309,35 @@ def _api(method: str, path: str, **kwargs):
     except httpx.ConnectError:
         return None, f"Cannot connect to API at `{base}`. Is the backend running?"
     except httpx.HTTPStatusError as e:
+        # Handle 401 (expired token) — auto-logout
+        if e.response.status_code == 401:
+            st.session_state.token = None
+            st.session_state.logged_in = False
+            return None, "Session expired. Please log in again."
         return None, f"API error {e.response.status_code}: {e.response.text[:200]}"
     except Exception as e:
         return None, str(e)
 
 
+def api_signup(email: str, password: str) -> tuple:
+    return _api("POST", "/v1/auth/signup", json={
+        "email": email, "password": password,
+    })
+
+def api_login(email: str, password: str) -> tuple:
+    return _api("POST", "/v1/auth/login", json={
+        "email": email, "password": password,
+    })
+
 def api_query(question: str, confirmed: bool = False) -> tuple:
-    return _api("POST", "/v1/query", json={
+    payload = {
         "question":   question,
         "session_id": st.session_state.session_id,
         "confirmed":  confirmed,
-    })
-
+    }
+    if st.session_state.active_connection_id:
+        payload["connection_id"] = st.session_state.active_connection_id
+    return _api("POST", "/v1/query", json=payload)
 
 def api_history() -> tuple:
     return _api("GET", "/v1/history", params={
@@ -322,17 +345,28 @@ def api_history() -> tuple:
         "limit":      50,
     })
 
-
 def api_schema() -> tuple:
-    return _api("GET", "/v1/schema")
-
+    params = {}
+    if st.session_state.active_connection_id:
+        params["connection_id"] = st.session_state.active_connection_id
+    return _api("GET", "/v1/schema", params=params)
 
 def api_audit(limit: int = 50, offset: int = 0) -> tuple:
-    """Fetch audit logs (Admin only)."""
-    return _api("GET", "/v1/audit", params={
-        "limit":  limit,
-        "offset": offset,
+    return _api("GET", "/v1/audit", params={"limit": limit, "offset": offset})
+
+def api_connect_db(name, host, port, db, user, password) -> tuple:
+    return _api("POST", "/v1/connections", json={
+        "connection_name": name,
+        "host": host, "port": port,
+        "database_name": db,
+        "username": user, "password": password,
     })
+
+def api_list_connections() -> tuple:
+    return _api("GET", "/v1/connections")
+
+def api_delete_connection(conn_id: str) -> tuple:
+    return _api("DELETE", f"/v1/connections/{conn_id}")
 
 # =========================================================
 # COMPONENT RENDERERS
@@ -579,7 +613,79 @@ def render_history_sidebar(history: list):
 
 
 # =========================================================
-# SIDEBAR
+# AUTH PAGE  (shown when not logged in)
+# =========================================================
+
+if not st.session_state.logged_in:
+    # Center the auth form
+    col_l, col_c, col_r = st.columns([1, 2, 1])
+    with col_c:
+        st.markdown(
+            "<div style='text-align:center; padding:40px 0 20px 0;'>"
+            "<span style='font-size:3rem'>🗄️</span>"
+            "<h2 style='color:#a5b4fc; font-weight:700; margin-top:8px'>Text-to-SQL Explorer</h2>"
+            "<p style='color:#94a3b8; font-size:0.9rem'>Sign in or create an account to get started</p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        auth_tab_login, auth_tab_signup = st.tabs(["🔑 Login", "📝 Sign Up"])
+
+        with auth_tab_login:
+            with st.form("login_form"):
+                login_email = st.text_input("Email", placeholder="you@example.com", key="login_email")
+                login_pass  = st.text_input("Password", type="password", key="login_pass")
+                login_btn   = st.form_submit_button("Log In", use_container_width=True)
+
+            if login_btn:
+                if not login_email or not login_pass:
+                    st.error("Please enter both email and password.")
+                else:
+                    data, err = api_login(login_email, login_pass)
+                    if err:
+                        st.error(f"❌ {err}")
+                    elif data:
+                        st.session_state.token = data["token"]
+                        st.session_state.user_id = data["user_id"]
+                        st.session_state.user_email = data["email"]
+                        st.session_state.user_role = data["role"]
+                        st.session_state.logged_in = True
+                        st.success(f"✅ Welcome back, {data['email']}!")
+                        time.sleep(0.5)
+                        st.rerun()
+
+        with auth_tab_signup:
+            with st.form("signup_form"):
+                signup_email = st.text_input("Email", placeholder="you@example.com", key="signup_email")
+                signup_pass  = st.text_input("Password", type="password", key="signup_pass")
+                signup_pass2 = st.text_input("Confirm Password", type="password", key="signup_pass2")
+                signup_btn   = st.form_submit_button("Create Account", use_container_width=True)
+
+            if signup_btn:
+                if not signup_email or not signup_pass:
+                    st.error("Please fill in all fields.")
+                elif signup_pass != signup_pass2:
+                    st.error("Passwords do not match.")
+                elif len(signup_pass) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    data, err = api_signup(signup_email, signup_pass)
+                    if err:
+                        st.error(f"❌ {err}")
+                    elif data:
+                        st.session_state.token = data["token"]
+                        st.session_state.user_id = data["user_id"]
+                        st.session_state.user_email = data["email"]
+                        st.session_state.user_role = data["role"]
+                        st.session_state.logged_in = True
+                        st.success(f"✅ Account created! Welcome, {data['email']}!")
+                        time.sleep(0.5)
+                        st.rerun()
+
+    st.stop()
+
+# =========================================================
+# SIDEBAR (logged-in users only)
 # =========================================================
 
 with st.sidebar:
@@ -590,6 +696,106 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
+
+    # User profile
+    role_icons = {"viewer": "👁️", "editor": "✏️", "admin": "🛡️"}
+    r_icon = role_icons.get(st.session_state.user_role, "👤")
+    st.markdown(
+        f"<div style='background:rgba(165,180,252,0.1); border:1px solid #334155; "
+        f"border-radius:8px; padding:10px 12px; margin-bottom:8px;'>"
+        f"<span style='font-size:0.9rem;'>👤 {st.session_state.user_email}</span><br>"
+        f"<span style='color:#94a3b8; font-size:0.75rem;'>"
+        f"{r_icon} {st.session_state.user_role.capitalize()}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    if st.button("🚪 Logout", use_container_width=True):
+        for k in ["token", "user_id", "user_email", "logged_in",
+                  "connections", "active_connection_id", "active_connection_name",
+                  "result", "history"]:
+            st.session_state[k] = None if k != "logged_in" else False
+            if k == "history":
+                st.session_state[k] = []
+        st.rerun()
+
+    st.divider()
+
+    # ── Database Connections ──────────────────────────────
+    with st.expander("🔌 Database Connections", expanded=True):
+        # Load connections
+        conns_data, conns_err = api_list_connections()
+        connections = conns_data.get("connections", []) if conns_data else []
+        st.session_state.connections = connections
+
+        # Active connection selector
+        conn_options = [{"id": None, "label": "📦 Default (college_2)"}]
+        for c in connections:
+            tbl_count = c.get("table_count", 0)
+            conn_options.append({
+                "id": c["id"],
+                "label": f"🗄 {c['connection_name']} ({tbl_count} tables)",
+            })
+
+        labels = [o["label"] for o in conn_options]
+        current_idx = 0
+        for i, o in enumerate(conn_options):
+            if o["id"] == st.session_state.active_connection_id:
+                current_idx = i
+                break
+
+        selected_label = st.selectbox(
+            "Active Database",
+            options=labels,
+            index=current_idx,
+            key="db_selector",
+        )
+        selected_conn = conn_options[labels.index(selected_label)]
+        st.session_state.active_connection_id = selected_conn["id"]
+        st.session_state.active_connection_name = selected_label
+
+        st.divider()
+
+        # Connect new database form
+        st.markdown("<p style='font-size:0.82rem; color:#94a3b8; font-weight:600;'>Connect New Database</p>", unsafe_allow_html=True)
+        with st.form("connect_db_form"):
+            c_name = st.text_input("Connection Name", placeholder="My Database")
+            c_host = st.text_input("Host", value="localhost")
+            c_port = st.number_input("Port", value=5432, min_value=1, max_value=65535)
+            c_db   = st.text_input("Database Name", placeholder="my_database")
+            c_user = st.text_input("Username", value="postgres")
+            c_pass = st.text_input("Password", type="password")
+            connect_btn = st.form_submit_button("🔗 Connect & Extract Schema", use_container_width=True)
+
+        if connect_btn:
+            if not all([c_name, c_host, c_db, c_user, c_pass]):
+                st.error("All fields are required.")
+            else:
+                with st.spinner("Connecting and extracting schema..."):
+                    data, err = api_connect_db(c_name, c_host, c_port, c_db, c_user, c_pass)
+                if err:
+                    st.error(f"❌ {err}")
+                elif data:
+                    st.success(f"✅ {data.get('message', 'Connected!')}")
+                    # Auto-select the new connection
+                    st.session_state.active_connection_id = data["id"]
+                    time.sleep(0.5)
+                    st.rerun()
+
+        # Delete connections
+        if connections:
+            st.divider()
+            for c in connections:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.caption(f"🗄 {c['connection_name']}")
+                    st.caption(f"{c['host']}:{c['port']}/{c['database_name']}")
+                with col2:
+                    if st.button("🗑️", key=f"del_{c['id']}"):
+                        api_delete_connection(c["id"])
+                        if st.session_state.active_connection_id == c["id"]:
+                            st.session_state.active_connection_id = None
+                        st.rerun()
 
     # Settings
     with st.expander("⚙️ Settings", expanded=False):
@@ -602,43 +808,6 @@ with st.sidebar:
             "Session ID",
             value=st.session_state.session_id,
             placeholder="default",
-        )
-
-    # RBAC Settings
-    with st.expander("🔐 Role & Identity", expanded=True):
-        role_options = ["viewer", "editor", "admin"]
-        role_icons = {"viewer": "👁️", "editor": "✏️", "admin": "🛡️"}
-        current_idx = role_options.index(st.session_state.user_role) if st.session_state.user_role in role_options else 0
-
-        selected_role = st.selectbox(
-            "Role",
-            options=role_options,
-            index=current_idx,
-            format_func=lambda r: f"{role_icons.get(r, '')} {r.capitalize()}",
-            key="role_selector",
-        )
-        st.session_state.user_role = selected_role
-
-        st.session_state.user_id = st.text_input(
-            "User ID",
-            value=st.session_state.user_id,
-            placeholder="anonymous",
-        )
-
-        # Permission summary badge
-        perm_map = {
-            "viewer": ("Read-only access", "#22c55e", "SELECT queries, schema, history"),
-            "editor": ("Read + Write access", "#f59e0b", "SELECT + INSERT/UPDATE/DELETE"),
-            "admin":  ("Full access", "#ef4444", "All operations + audit logs"),
-        }
-        perm_label, perm_color, perm_desc = perm_map.get(selected_role, perm_map["viewer"])
-        st.markdown(
-            f"<div style='background:rgba({','.join(str(int(perm_color.lstrip('#')[i:i+2], 16)) for i in (0, 2, 4))},0.15); "
-            f"border:1px solid {perm_color}; border-radius:8px; padding:8px 12px; margin-top:8px;'>"
-            f"<span style='color:{perm_color}; font-weight:600; font-size:0.82rem;'>{perm_label}</span>"
-            f"<br><span style='color:#94a3b8; font-size:0.75rem;'>{perm_desc}</span>"
-            f"</div>",
-            unsafe_allow_html=True,
         )
 
     # Schema explorer

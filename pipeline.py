@@ -33,6 +33,7 @@ from guardrails.sandbox_executor import build_dsn
 from guardrails.sql_guardrails import RiskLevel
 from models import StructuredSQLResponse, validate_sql_syntax
 from rbac import Role, get_dsn_for_role
+from schema.extractor import get_collection_name
 from verification import (
     ConfidenceScorer,
     ResultSanityChecker,
@@ -131,6 +132,61 @@ def _get_sandbox_for_role(role: Role) -> SandboxExecutor:
     return _role_sandbox_cache[role]
 
 logger.info("All pipeline components ready.")
+
+
+# =========================================================
+# MULTI-DB CONNECTION SUPPORT
+# =========================================================
+
+def _load_connection_resources(
+    connection_id: str,
+    user_id: str,
+) -> tuple[dict, any, SandboxExecutor]:
+    """
+    Load schema, ChromaDB collection, and a SandboxExecutor for a
+    user's database connection.
+
+    Returns (conn_schema, conn_collection, conn_sandbox).
+    Raises RuntimeError if the connection is not found or has no schema.
+    """
+    from db_models import get_connection  # Lazy import to avoid circular
+
+    conn = get_connection(connection_id, user_id)
+    if not conn:
+        raise RuntimeError(f"Connection '{connection_id}' not found.")
+
+    # Load cached schema from the connection
+    conn_schema = conn.get("schema_json")
+    if not conn_schema:
+        raise RuntimeError(
+            f"Connection '{conn.get('connection_name')}' has no cached schema. "
+            f"Please reconnect to extract the schema."
+        )
+
+    # Load the connection-specific ChromaDB collection
+    coll_name = get_collection_name(connection_id)
+    try:
+        conn_collection = chroma_client.get_collection(name=coll_name)
+    except Exception:
+        raise RuntimeError(
+            f"Embeddings not found for connection '{conn.get('connection_name')}'. "
+            f"Please reconnect to rebuild embeddings."
+        )
+
+    # Build a DSN from the connection details
+    dsn = (
+        f"host={conn['host']} port={conn['port']} "
+        f"dbname={conn['database_name']} "
+        f"user={conn['username']} password={conn['password']}"
+    )
+    conn_sandbox = SandboxExecutor(dsn=dsn, readonly=True)
+
+    logger.info(
+        "Loaded connection resources: conn=%s, tables=%d, collection=%s",
+        connection_id, len(conn_schema), coll_name,
+    )
+
+    return conn_schema, conn_collection, conn_sandbox
 
 # =========================================================
 # PROMPT CHAIN (used by ambiguity judge)
@@ -259,29 +315,50 @@ class QueryResult:
 # HELPER FUNCTIONS
 # =========================================================
 
-def get_relevant_tables(question: str, top_k: int = 3) -> list[str]:
-    results = collection.query(query_texts=[question], n_results=top_k)
+def get_relevant_tables(
+    question: str,
+    top_k: int = 3,
+    coll: any = None,
+) -> list[str]:
+    """Query ChromaDB for relevant tables. Uses default or override collection."""
+    target = coll or collection
+    results = target.query(query_texts=[question], n_results=top_k)
     return [m["table_name"] for m in results["metadatas"][0]]
 
 
-def format_schema(relevant_tables: list[str]) -> str:
+def format_schema(
+    relevant_tables: list[str],
+    s: dict | None = None,
+) -> str:
+    """Format schema text for the prompt. Uses default or override schema."""
+    target = s or schema
     out = ""
     for table in relevant_tables:
-        info = schema[table]
+        info = target.get(table)
+        if not info:
+            continue
         out += f"\nTable: {table}\nColumns:\n"
         for col in info["columns"]:
             out += f"- {col['name']} ({col['type']})\n"
-        if info["primary_keys"]:
+        if info.get("primary_keys"):
             out += "Primary Keys:\n"
             for pk in info["primary_keys"]:
                 out += f"- {pk}\n"
     return out
 
 
-def format_relationships(relevant_tables: list[str]) -> str:
+def format_relationships(
+    relevant_tables: list[str],
+    s: dict | None = None,
+) -> str:
+    """Format relationship text for the prompt. Uses default or override schema."""
+    target = s or schema
     out = "\nRelationships:\n"
     for table in relevant_tables:
-        for fk in schema[table]["foreign_keys"]:
+        info = target.get(table)
+        if not info:
+            continue
+        for fk in info.get("foreign_keys", []):
             out += (
                 f"{table}.{fk['constrained_columns']} → "
                 f"{fk['referred_table']}.{fk['referred_columns']}\n"
@@ -311,10 +388,15 @@ def _extract_json_object(text: str) -> dict:
     return json.loads(cleaned[start:end + 1])
 
 
-def build_ambiguity_prompt(user_question: str) -> str:
-    all_tables       = list(schema.keys())
-    schema_text      = format_schema(all_tables)
-    relationship_text = format_relationships(all_tables)
+def build_ambiguity_prompt(
+    user_question: str,
+    s: dict | None = None,
+    coll: any = None,
+) -> str:
+    target = s or schema
+    all_tables       = list(target.keys())
+    schema_text      = format_schema(all_tables, s=target)
+    relationship_text = format_relationships(all_tables, s=target)
     example_text     = format_examples()
     return f"""
 You are an ambiguity judge for a text-to-SQL system.
@@ -375,9 +457,13 @@ User Question:
 """
 
 
-def detect_ambiguity(user_question: str) -> Optional[dict]:
+def detect_ambiguity(
+    user_question: str,
+    s: dict | None = None,
+    coll: any = None,
+) -> Optional[dict]:
     logger.debug("Running ambiguity check for: %r", user_question)
-    prompt = build_ambiguity_prompt(user_question)
+    prompt = build_ambiguity_prompt(user_question, s=s, coll=coll)
     try:
         raw = _chain.invoke({"prompt": prompt})
         parsed = _extract_json_object(raw)
@@ -408,10 +494,14 @@ def detect_ambiguity(user_question: str) -> Optional[dict]:
         }
 
 
-def build_sql_prompt(user_question: str) -> str:
-    relevant_tables   = get_relevant_tables(user_question)
-    schema_text       = format_schema(relevant_tables)
-    relationship_text = format_relationships(relevant_tables)
+def build_sql_prompt(
+    user_question: str,
+    s: dict | None = None,
+    coll: any = None,
+) -> str:
+    relevant_tables   = get_relevant_tables(user_question, coll=coll)
+    schema_text       = format_schema(relevant_tables, s=s)
+    relationship_text = format_relationships(relevant_tables, s=s)
     example_text      = format_examples()
     return f"""
 You are an expert PostgreSQL SQL generator.
@@ -442,9 +532,11 @@ User Question:
 
 def generate_structured_sql(
     user_question: str,
+    s: dict | None = None,
+    coll: any = None,
 ) -> tuple[StructuredSQLResponse, bool, str]:
     """Generate SQL, return (response, is_valid, validation_msg)."""
-    prompt_text = build_sql_prompt(user_question)
+    prompt_text = build_sql_prompt(user_question, s=s, coll=coll)
     response    = structured_llm.invoke(prompt_text)
     is_valid, msg = validate_sql_syntax(response.sql_query)
     logger.info(
@@ -462,6 +554,8 @@ def run_query(
     question: str,
     confirmed: bool = False,
     role: str | None = None,
+    connection_id: str | None = None,
+    user_id: str | None = None,
 ) -> QueryResult:
     """
     Run the complete Text-to-SQL pipeline for *question*.
@@ -478,22 +572,43 @@ def run_query(
 
     Parameters
     ----------
-    question  : Natural-language question from the user.
-    confirmed : If True, the user has acknowledged the risk warning
-                and wants to proceed with execution regardless of risk level.
-    role      : User's role (viewer / editor / admin). Determines which
-                PostgreSQL user and sandbox mode to use.
+    question      : Natural-language question from the user.
+    confirmed     : If True, the user has acknowledged the risk warning
+                    and wants to proceed with execution regardless.
+    role          : User's role (viewer / editor / admin). Determines
+                    which PostgreSQL user and sandbox mode to use.
+    connection_id : UUID of a user's database connection. When provided,
+                    the pipeline uses that connection's schema, embeddings,
+                    and DSN instead of the defaults.
+    user_id       : UUID of the authenticated user (required when
+                    connection_id is provided).
 
     Returns a QueryResult dataclass.  On unexpected errors the
     ``error`` field is set and all other fields have safe defaults.
     """
 
-    logger.info("run_query: %r", question)
+    logger.info("run_query: %r (connection=%s)", question, connection_id or "default")
 
     result = QueryResult(question=question, sql="", safe_sql="", explanation="")
 
-    # Resolve which sandbox to use based on role
-    if role:
+    # Load connection-specific resources or use defaults
+    conn_schema = None
+    conn_collection = None
+    conn_sandbox = None
+
+    if connection_id and user_id:
+        try:
+            conn_schema, conn_collection, conn_sandbox = (
+                _load_connection_resources(connection_id, user_id)
+            )
+        except RuntimeError as exc:
+            result.error = str(exc)
+            return result
+
+    # Resolve which sandbox to use
+    if conn_sandbox:
+        active_sandbox = conn_sandbox
+    elif role:
         try:
             role_enum = Role(role)
         except ValueError:
@@ -502,16 +617,24 @@ def run_query(
     else:
         active_sandbox = sandbox  # Default readonly sandbox
 
+    # Use connection-specific schema & collection or defaults
+    active_schema = conn_schema or schema
+    active_collection = conn_collection or collection
+
     try:
         # ── 1. Ambiguity ──────────────────────────────────
-        clarification = detect_ambiguity(question)
+        clarification = detect_ambiguity(
+            question, s=active_schema, coll=active_collection,
+        )
         if clarification:
             result.needs_clarification   = True
             result.clarification_request = clarification
             return result
 
         # ── 2. SQL generation ─────────────────────────────
-        response, is_valid, val_msg = generate_structured_sql(question)
+        response, is_valid, val_msg = generate_structured_sql(
+            question, s=active_schema, coll=active_collection,
+        )
 
         result.sql                = response.sql_query
         result.explanation        = response.explanation
