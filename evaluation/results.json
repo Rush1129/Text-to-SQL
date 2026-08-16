@@ -1,0 +1,1184 @@
+[
+  {
+    "question": "Find the buildings which have rooms with capacity more than 50.",
+    "sql": "SELECT DISTINCT building FROM classroom WHERE capacity > 50;",
+    "safe_sql": "SELECT DISTINCT building FROM classroom WHERE capacity > 50\nLIMIT 1000",
+    "explanation": "The query selects distinct building names from the classroom table where the room capacity exceeds 50.",
+    "tables_accessed": [
+      "classroom"
+    ],
+    "columns_accessed": [
+      {
+        "table": "classroom",
+        "column": "building"
+      },
+      {
+        "table": "classroom",
+        "column": "capacity"
+      }
+    ],
+    "execution_results": [
+      {
+        "building": "Taylor"
+      },
+      {
+        "building": "Nassau"
+      },
+      {
+        "building": "Whitman"
+      },
+      {
+        "building": "Gates"
+      },
+      {
+        "building": "Stabler"
+      },
+      {
+        "building": "Saucon"
+      },
+      {
+        "building": "Garfield"
+      },
+      {
+        "building": "Rathbone"
+      },
+      {
+        "building": "Lambeau"
+      },
+      {
+        "building": "Painter"
+      }
+    ],
+    "dataframe": [
+      {
+        "building": "Taylor"
+      },
+      {
+        "building": "Nassau"
+      },
+      {
+        "building": "Whitman"
+      },
+      {
+        "building": "Gates"
+      },
+      {
+        "building": "Stabler"
+      },
+      {
+        "building": "Saucon"
+      },
+      {
+        "building": "Garfield"
+      },
+      {
+        "building": "Rathbone"
+      },
+      {
+        "building": "Lambeau"
+      },
+      {
+        "building": "Painter"
+      }
+    ],
+    "row_count": 10,
+    "execution_time_ms": 0.542,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which buildings contain classrooms that can accommodate more than 50 people?",
+    "alignment_score": 0.5,
+    "alignment_label": "LOW",
+    "alignment_flagged": true,
+    "alignment_flag_reason": "Alignment is only 50% (below threshold 65%). The SQL may not correctly answer the intended question. Original: \"Find the buildings which have rooms with capacity more than 50.\" — SQL answers: \"Which buildings contain classrooms that can accommodate more than 50 people?\"",
+    "judge_reason": "The back‑translated question narrows the scope to classrooms, missing buildings that have other types of rooms with capacity over 50, so it only partially captures the original intent.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 4 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 0.825,
+      "grade": "B",
+      "grade_label": "Good",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 0.5,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.175,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (82% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "What are the distinct buildings with capacities of greater than 50?",
+    "sql": "SELECT DISTINCT building\nFROM classroom\nWHERE capacity > 50;",
+    "safe_sql": "SELECT DISTINCT building\nFROM classroom\nWHERE capacity > 50\nLIMIT 1000",
+    "explanation": "Retrieves unique building names from the classroom table where the room capacity exceeds 50.",
+    "tables_accessed": [
+      "classroom"
+    ],
+    "columns_accessed": [
+      {
+        "table": "classroom",
+        "column": "building"
+      },
+      {
+        "table": "classroom",
+        "column": "capacity"
+      }
+    ],
+    "execution_results": [
+      {
+        "building": "Taylor"
+      },
+      {
+        "building": "Nassau"
+      },
+      {
+        "building": "Whitman"
+      },
+      {
+        "building": "Gates"
+      },
+      {
+        "building": "Stabler"
+      },
+      {
+        "building": "Saucon"
+      },
+      {
+        "building": "Garfield"
+      },
+      {
+        "building": "Rathbone"
+      },
+      {
+        "building": "Lambeau"
+      },
+      {
+        "building": "Painter"
+      }
+    ],
+    "dataframe": [
+      {
+        "building": "Taylor"
+      },
+      {
+        "building": "Nassau"
+      },
+      {
+        "building": "Whitman"
+      },
+      {
+        "building": "Gates"
+      },
+      {
+        "building": "Stabler"
+      },
+      {
+        "building": "Saucon"
+      },
+      {
+        "building": "Garfield"
+      },
+      {
+        "building": "Rathbone"
+      },
+      {
+        "building": "Lambeau"
+      },
+      {
+        "building": "Painter"
+      }
+    ],
+    "row_count": 10,
+    "execution_time_ms": 0.436,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which buildings contain classrooms that can seat more than 50 people?",
+    "alignment_score": 0.5,
+    "alignment_label": "LOW",
+    "alignment_flagged": true,
+    "alignment_flag_reason": "Alignment is only 50% (below threshold 65%). The SQL may not correctly answer the intended question. Original: \"What are the distinct buildings with capacities of greater than 50?\" — SQL answers: \"Which buildings contain classrooms that can seat more than 50 people?\"",
+    "judge_reason": "The back‑translated question captures the core intent of finding buildings with capacity over 50, but adds an extra condition about classrooms, making it a narrower interpretation.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 4 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 0.825,
+      "grade": "B",
+      "grade_label": "Good",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 0.5,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.175,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (82% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "Count the number of rooms that are not in the Lamberton building.",
+    "sql": "SELECT COUNT(*) AS room_count\nFROM classroom\nWHERE building <> 'Lamberton';",
+    "safe_sql": "SELECT COUNT(*) AS room_count\nFROM classroom\nWHERE building <> 'Lamberton'\nLIMIT 1000",
+    "explanation": "Counts the number of classroom records whose building is not named \"Lamberton\".",
+    "tables_accessed": [
+      "classroom"
+    ],
+    "columns_accessed": [
+      {
+        "table": "classroom",
+        "column": "building"
+      }
+    ],
+    "execution_results": [
+      {
+        "room_count": 28
+      }
+    ],
+    "dataframe": [
+      {
+        "room_count": 28
+      }
+    ],
+    "row_count": 1,
+    "execution_time_ms": 0.279,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "How many classrooms are located in buildings other than Lamberton?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "Both questions ask for the count of rooms/classrooms that are not in the Lamberton building, with only minor wording differences.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 3 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "How many classrooms are not in Lamberton?",
+    "sql": "SELECT COUNT(*) AS num_classrooms_not_in_lamberton FROM classroom WHERE building <> 'Lamberton';",
+    "safe_sql": "SELECT COUNT(*) AS num_classrooms_not_in_lamberton FROM classroom WHERE building <> 'Lamberton'\nLIMIT 1000",
+    "explanation": "Counts the number of classroom records whose building name is not \"Lamberton\".",
+    "tables_accessed": [
+      "classroom"
+    ],
+    "columns_accessed": [
+      {
+        "table": "classroom",
+        "column": "building"
+      }
+    ],
+    "execution_results": [
+      {
+        "num_classrooms_not_in_lamberton": 28
+      }
+    ],
+    "dataframe": [
+      {
+        "num_classrooms_not_in_lamberton": 28
+      }
+    ],
+    "row_count": 1,
+    "execution_time_ms": 0.43,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "How many classrooms are located in buildings other than Lamberton?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "Both questions ask for the count of classrooms that are not located in the Lamberton building.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 3 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "What is the name and building of the departments whose budget is more than the average budget?",
+    "sql": "SELECT dept_name, building\nFROM department\nWHERE budget > (SELECT AVG(budget) FROM department);",
+    "safe_sql": "SELECT dept_name, building\nFROM department\nWHERE budget > (SELECT AVG(budget) FROM department)\nLIMIT 1000",
+    "explanation": "The query retrieves the department name and building for all departments whose budget exceeds the average budget of all departments.",
+    "tables_accessed": [
+      "department"
+    ],
+    "columns_accessed": [
+      {
+        "table": "department",
+        "column": "dept_name"
+      },
+      {
+        "table": "department",
+        "column": "building"
+      },
+      {
+        "table": "department",
+        "column": "budget"
+      }
+    ],
+    "execution_results": [
+      {
+        "dept_name": "Biology",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "History",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      },
+      {
+        "dept_name": "Pol. Sci.",
+        "building": "Whitman"
+      },
+      {
+        "dept_name": "English",
+        "building": "Palmer"
+      },
+      {
+        "dept_name": "Languages",
+        "building": "Linderman"
+      },
+      {
+        "dept_name": "Finance",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "Cybernetics",
+        "building": "Mercer"
+      },
+      {
+        "dept_name": "Astronomy",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Athletics",
+        "building": "Bronfman"
+      },
+      {
+        "dept_name": "Psychology",
+        "building": "Thompson"
+      },
+      {
+        "dept_name": "Math",
+        "building": "Brodhead"
+      }
+    ],
+    "dataframe": [
+      {
+        "dept_name": "Biology",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "History",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      },
+      {
+        "dept_name": "Pol. Sci.",
+        "building": "Whitman"
+      },
+      {
+        "dept_name": "English",
+        "building": "Palmer"
+      },
+      {
+        "dept_name": "Languages",
+        "building": "Linderman"
+      },
+      {
+        "dept_name": "Finance",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "Cybernetics",
+        "building": "Mercer"
+      },
+      {
+        "dept_name": "Astronomy",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Athletics",
+        "building": "Bronfman"
+      },
+      {
+        "dept_name": "Psychology",
+        "building": "Thompson"
+      },
+      {
+        "dept_name": "Math",
+        "building": "Brodhead"
+      }
+    ],
+    "row_count": 12,
+    "execution_time_ms": 0.553,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which departments have budgets higher than the average department budget, and in which buildings are they located?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "The back‑translated question asks for the same information—departments with budgets above the average and their buildings—matching the original intent exactly.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 6 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "Give the name and building of the departments with greater than average budget.",
+    "sql": "SELECT dept_name, building\nFROM department\nWHERE budget > (SELECT AVG(budget) FROM department);",
+    "safe_sql": "SELECT dept_name, building\nFROM department\nWHERE budget > (SELECT AVG(budget) FROM department)\nLIMIT 1000",
+    "explanation": "The query selects the department name and building for all departments whose budget exceeds the average budget across all departments.",
+    "tables_accessed": [
+      "department"
+    ],
+    "columns_accessed": [
+      {
+        "table": "department",
+        "column": "dept_name"
+      },
+      {
+        "table": "department",
+        "column": "building"
+      },
+      {
+        "table": "department",
+        "column": "budget"
+      }
+    ],
+    "execution_results": [
+      {
+        "dept_name": "Biology",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "History",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      },
+      {
+        "dept_name": "Pol. Sci.",
+        "building": "Whitman"
+      },
+      {
+        "dept_name": "English",
+        "building": "Palmer"
+      },
+      {
+        "dept_name": "Languages",
+        "building": "Linderman"
+      },
+      {
+        "dept_name": "Finance",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "Cybernetics",
+        "building": "Mercer"
+      },
+      {
+        "dept_name": "Astronomy",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Athletics",
+        "building": "Bronfman"
+      },
+      {
+        "dept_name": "Psychology",
+        "building": "Thompson"
+      },
+      {
+        "dept_name": "Math",
+        "building": "Brodhead"
+      }
+    ],
+    "dataframe": [
+      {
+        "dept_name": "Biology",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "History",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      },
+      {
+        "dept_name": "Pol. Sci.",
+        "building": "Whitman"
+      },
+      {
+        "dept_name": "English",
+        "building": "Palmer"
+      },
+      {
+        "dept_name": "Languages",
+        "building": "Linderman"
+      },
+      {
+        "dept_name": "Finance",
+        "building": "Candlestick"
+      },
+      {
+        "dept_name": "Cybernetics",
+        "building": "Mercer"
+      },
+      {
+        "dept_name": "Astronomy",
+        "building": "Taylor"
+      },
+      {
+        "dept_name": "Athletics",
+        "building": "Bronfman"
+      },
+      {
+        "dept_name": "Psychology",
+        "building": "Thompson"
+      },
+      {
+        "dept_name": "Math",
+        "building": "Brodhead"
+      }
+    ],
+    "row_count": 12,
+    "execution_time_ms": 0.442,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which departments have budgets higher than the average department budget, and in which buildings are they located?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "The back‑translated question asks for the same information—departments with budgets above the average and their buildings—as the original.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 6 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "Find the room number of the rooms which can sit 50 to 100 students and their buildings.",
+    "sql": "SELECT room_number, building\nFROM classroom\nWHERE capacity BETWEEN 50 AND 100;",
+    "safe_sql": "SELECT room_number, building\nFROM classroom\nWHERE capacity BETWEEN 50 AND 100\nLIMIT 1000",
+    "explanation": "This query selects the room number and building from the classroom table for rooms whose capacity is between 50 and 100 students inclusive.",
+    "tables_accessed": [
+      "classroom"
+    ],
+    "columns_accessed": [
+      {
+        "table": "classroom",
+        "column": "capacity"
+      },
+      {
+        "table": "classroom",
+        "column": "room_number"
+      },
+      {
+        "table": "classroom",
+        "column": "building"
+      }
+    ],
+    "execution_results": [
+      {
+        "room_number": "45",
+        "building": "Nassau"
+      },
+      {
+        "room_number": "86",
+        "building": "Painter"
+      },
+      {
+        "room_number": "707",
+        "building": "Gates"
+      },
+      {
+        "room_number": "183",
+        "building": "Taylor"
+      },
+      {
+        "room_number": "119",
+        "building": "Garfield"
+      },
+      {
+        "room_number": "261",
+        "building": "Rathbone"
+      },
+      {
+        "room_number": "348",
+        "building": "Lambeau"
+      }
+    ],
+    "dataframe": [
+      {
+        "room_number": "45",
+        "building": "Nassau"
+      },
+      {
+        "room_number": "86",
+        "building": "Painter"
+      },
+      {
+        "room_number": "707",
+        "building": "Gates"
+      },
+      {
+        "room_number": "183",
+        "building": "Taylor"
+      },
+      {
+        "room_number": "119",
+        "building": "Garfield"
+      },
+      {
+        "room_number": "261",
+        "building": "Rathbone"
+      },
+      {
+        "room_number": "348",
+        "building": "Lambeau"
+      }
+    ],
+    "row_count": 7,
+    "execution_time_ms": 0.945,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which classrooms have capacities between 50 and 100, and in which buildings are they located?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "The back‑translated question asks for classrooms with capacities between 50 and 100 and their buildings, exactly matching the original intent of finding room numbers and buildings for rooms that can seat 50 to 100 students.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 6 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "What are the room numbers and corresponding buildings for classrooms which can seat between 50 to 100 students?",
+    "sql": "SELECT room_number, building\nFROM classroom\nWHERE capacity BETWEEN 50 AND 100;",
+    "safe_sql": "SELECT room_number, building\nFROM classroom\nWHERE capacity BETWEEN 50 AND 100\nLIMIT 1000",
+    "explanation": "The query retrieves the room number and building name for each classroom whose seating capacity is between 50 and 100 students, inclusive.",
+    "tables_accessed": [
+      "classroom"
+    ],
+    "columns_accessed": [
+      {
+        "table": "classroom",
+        "column": "room_number"
+      },
+      {
+        "table": "classroom",
+        "column": "building"
+      },
+      {
+        "table": "classroom",
+        "column": "capacity"
+      }
+    ],
+    "execution_results": [
+      {
+        "room_number": "45",
+        "building": "Nassau"
+      },
+      {
+        "room_number": "86",
+        "building": "Painter"
+      },
+      {
+        "room_number": "707",
+        "building": "Gates"
+      },
+      {
+        "room_number": "183",
+        "building": "Taylor"
+      },
+      {
+        "room_number": "119",
+        "building": "Garfield"
+      },
+      {
+        "room_number": "261",
+        "building": "Rathbone"
+      },
+      {
+        "room_number": "348",
+        "building": "Lambeau"
+      }
+    ],
+    "dataframe": [
+      {
+        "room_number": "45",
+        "building": "Nassau"
+      },
+      {
+        "room_number": "86",
+        "building": "Painter"
+      },
+      {
+        "room_number": "707",
+        "building": "Gates"
+      },
+      {
+        "room_number": "183",
+        "building": "Taylor"
+      },
+      {
+        "room_number": "119",
+        "building": "Garfield"
+      },
+      {
+        "room_number": "261",
+        "building": "Rathbone"
+      },
+      {
+        "room_number": "348",
+        "building": "Lambeau"
+      }
+    ],
+    "row_count": 7,
+    "execution_time_ms": 0.885,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": true,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which classrooms have capacities between 50 and 100, and in which buildings are they located?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "The back‑translated question asks for the same information—classrooms with capacities between 50 and 100 and their buildings—matching the original intent exactly.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 6 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "Find the name and building of the department with the highest budget.",
+    "sql": "SELECT dept_name, building\nFROM department\nORDER BY budget DESC\nLIMIT 1;",
+    "safe_sql": "SELECT dept_name, building\nFROM department\nORDER BY budget DESC\nLIMIT 1;",
+    "explanation": "The query selects the department name and its building for the department that has the maximum budget. It orders the departments by budget in descending order and limits the result to the top record.",
+    "tables_accessed": [
+      "department"
+    ],
+    "columns_accessed": [
+      {
+        "table": "department",
+        "column": "dept_name"
+      },
+      {
+        "table": "department",
+        "column": "building"
+      },
+      {
+        "table": "department",
+        "column": "budget"
+      }
+    ],
+    "execution_results": [
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      }
+    ],
+    "dataframe": [
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      }
+    ],
+    "row_count": 1,
+    "execution_time_ms": 2.126,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": false,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which departments have the highest budgets and in which buildings are they located?",
+    "alignment_score": 0.7,
+    "alignment_label": "MEDIUM",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "The back‑translated question captures the core intent of identifying the department(s) with the highest budget and their buildings, with only a minor pluralization difference.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 4 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 0.895,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 0.7,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.245,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (89% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "What is the department name and corresponding building for the department with the greatest budget?",
+    "sql": "SELECT dept_name, building\nFROM department\nORDER BY budget DESC\nLIMIT 1;",
+    "safe_sql": "SELECT dept_name, building\nFROM department\nORDER BY budget DESC\nLIMIT 1;",
+    "explanation": "The query selects the department name and building of the department that has the highest budget. It orders the departments by budget in descending order and returns the top record.",
+    "tables_accessed": [
+      "department"
+    ],
+    "columns_accessed": [
+      {
+        "table": "department",
+        "column": "dept_name"
+      },
+      {
+        "table": "department",
+        "column": "building"
+      },
+      {
+        "table": "department",
+        "column": "budget"
+      }
+    ],
+    "execution_results": [
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      }
+    ],
+    "dataframe": [
+      {
+        "dept_name": "Physics",
+        "building": "Wrigley"
+      }
+    ],
+    "row_count": 1,
+    "execution_time_ms": 0.944,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": false,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which departments have the highest budgets and in which buildings are they located?",
+    "alignment_score": 0.7,
+    "alignment_label": "MEDIUM",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "The back‑translated question captures the same core intent of finding the department(s) with the highest budget and their buildings, differing only in plural wording.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 4 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 0.895,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 0.7,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.245,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (89% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  },
+  {
+    "question": "What is the name of the student who has the highest total credits in the History department.",
+    "sql": "SELECT name FROM student WHERE dept_name = 'History' ORDER BY tot_cred DESC LIMIT 1;",
+    "safe_sql": "SELECT name FROM student WHERE dept_name = 'History' ORDER BY tot_cred DESC LIMIT 1;",
+    "explanation": "The query selects the name of the student who belongs to the History department and has the highest total credits. It filters students by dept_name = 'History', orders them by tot_cred in descending order, and returns the top result.",
+    "tables_accessed": [
+      "student"
+    ],
+    "columns_accessed": [
+      {
+        "table": "student",
+        "column": "name"
+      },
+      {
+        "table": "student",
+        "column": "dept_name"
+      },
+      {
+        "table": "student",
+        "column": "tot_cred"
+      }
+    ],
+    "execution_results": [
+      {
+        "name": "Cadis"
+      }
+    ],
+    "dataframe": [
+      {
+        "name": "Cadis"
+      }
+    ],
+    "row_count": 1,
+    "execution_time_ms": 9.398,
+    "execution_error": null,
+    "sql_valid": true,
+    "validation_message": "Valid SQL",
+    "guardrail_allowed": true,
+    "guardrail_warnings": [],
+    "guardrail_limit_applied": false,
+    "risk_level": "safe",
+    "risk_warning": "",
+    "back_translated_question": "Which History students have the highest total credits?",
+    "alignment_score": 1.0,
+    "alignment_label": "HIGH",
+    "alignment_flagged": false,
+    "alignment_flag_reason": null,
+    "judge_reason": "Both questions ask for the History student(s) with the highest total credits, capturing the same intent.",
+    "sanity_anomalies": [],
+    "sanity_pass_rate": 1.0,
+    "sanity_summary": "All 3 sanity checks passed ✅",
+    "confidence": {
+      "composite_score": 1.0,
+      "grade": "A",
+      "grade_label": "Excellent",
+      "signal_breakdown": {
+        "syntax_validity": 1.0,
+        "back_translation": 1.0,
+        "sanity_pass_rate": 1.0,
+        "schema_coverage": 1.0
+      },
+      "weighted_breakdown": {
+        "syntax_validity": 0.2,
+        "back_translation": 0.35,
+        "sanity_pass_rate": 0.3,
+        "schema_coverage": 0.15
+      },
+      "verdict": "Query looks correct (100% confidence). Results are likely trustworthy."
+    },
+    "needs_clarification": false,
+    "clarification_request": null,
+    "error": null,
+    "rows_affected": 0
+  }
+]

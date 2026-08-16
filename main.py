@@ -908,3 +908,4 @@ async def get_me(raw_request: Request):
 @app.get("/health", tags=["Meta"])
 async def health() -> dict:
     return {"status": "ok", "schema_tables": len(pl.schema)}
+    
