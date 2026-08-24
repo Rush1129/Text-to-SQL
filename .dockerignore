@@ -1,0 +1,17 @@
+.git/
+.gitignore
+.localvenv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+chroma_db/
+database/
+notes/
+.pytest_cache/
+*.log
+*.sqlite
+note.txt
+*.md
+!requirements.txt

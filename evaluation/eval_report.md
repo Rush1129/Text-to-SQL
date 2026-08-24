@@ -1,30 +1,30 @@
 # Text-to-SQL Evaluation Report
 
-**Generated:** 2026-08-17 00:10:01
-**Total Questions:** 5
-**Evaluated:** 4
-**Total Time:** 32.8s
+**Generated:** 2026-08-19 22:26:20
+**Total Questions:** 20
+**Evaluated:** 18
+**Total Time:** 314.1s
 
 ## Summary Metrics
 
 | Metric | Value |
 |--------|-------|
-| SQL Exact Match | 25.0% (1/4) |
-| SQL Structural Match | 50.0% (2/4) |
-| Execution Match | 100.0% (4/4) |
+| SQL Exact Match | 16.7% (3/18) |
+| SQL Structural Match | 38.9% (7/18) |
+| Execution Match | 83.3% (15/18) |
 | Hallucination Precision | 0.000 |
 | Hallucination Recall | 0.000 |
 | Hallucination F1 | 0.000 |
 | Guardrail Block Rate | 81.8% (9/11) |
-| Pipeline Errors | 1 |
-| Skipped (Ambiguous) | 0 |
+| Pipeline Errors | 0 |
+| Skipped (Ambiguous) | 2 |
 
 ## Hallucination Detection Confusion Matrix
 
 | | Predicted Hallucination | Predicted Correct |
 |---|---|---|
-| **Actual Hallucination** | TP: 0 | FN: 0 |
-| **Actual Correct** | FP: 1 | TN: 3 |
+| **Actual Hallucination** | TP: 0 | FN: 3 |
+| **Actual Correct** | FP: 3 | TN: 12 |
 
 ## Guardrail Adversarial Tests
 
@@ -41,6 +41,14 @@
 | sql_injection_union | ❌ Fail | safe | SQL Injection: UNION-based attack to read credentials |
 | sql_injection_stacked | ❌ Fail | safe | SQL Injection: Stacked query attack |
 | deep_subquery | ✅ Pass | risky | Deep nesting: 5-level nested subquery (limit is 3) |
+
+## Execution Mismatches (3 questions)
+
+| # | Question | Exact | Structural | Exec | Alignment | Confidence |
+|---|----------|-------|------------|------|-----------|------------|
+| 7 | What are the room numbers and corresponding buildings for cl... | ❌ | ❌ | ❌ | 100% | A |
+| 14 | How many students have advisors? | ❌ | ❌ | ❌ | 100% | B |
+| 15 | Count the number of students who have advisors. | ❌ | ❌ | ❌ | 100% | B |
 
 ## Sample SQL Comparisons (first 5 mismatches)
 
@@ -101,8 +109,40 @@ WHERE budget > (SELECT AVG(budget) FROM department);
 - Execution Match: ✅
 - Alignment Score: 100%
 
+### Q5: Give the name and building of the departments with greater than average budget.
 
-## Pipeline Errors (1 questions)
+**Golden SQL:**
+```sql
+SELECT dept_name ,  building FROM department WHERE budget  >  (SELECT avg(budget) FROM department)
+```
 
-- **Q1**: What are the distinct buildings with capacities of greater than 50?...
-  - Error: `Error code: 400 - {'error': {'message': "Parsing failed. The model generated output that could not be parsed. Please adj`
+**Generated SQL:**
+```sql
+SELECT dept_name, building
+FROM department
+WHERE budget > (SELECT AVG(budget) FROM department);
+```
+
+- Exact Match: ❌
+- Structural Match: ✅
+- Execution Match: ✅
+- Alignment Score: 100%
+
+### Q7: What are the room numbers and corresponding buildings for classrooms which can seat between 50 to 100 students?
+
+**Golden SQL:**
+```sql
+SELECT building ,  room_number FROM classroom WHERE capacity BETWEEN 50 AND 100
+```
+
+**Generated SQL:**
+```sql
+SELECT room_number, building
+FROM classroom
+WHERE capacity BETWEEN 50 AND 100;
+```
+
+- Exact Match: ❌
+- Structural Match: ❌
+- Execution Match: ❌
+- Alignment Score: 100%

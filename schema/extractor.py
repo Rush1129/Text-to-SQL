@@ -43,10 +43,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 # =========================================================
-# LLM SETUP (shared)
+# LLM SETUP (lazy — avoids crash if GROQ_API_KEY is missing at import)
 # =========================================================
 
-_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+_llm = None
+
+def _get_llm():
+    """Lazily initialise the LLM on first use."""
+    global _llm
+    if _llm is None:
+        _llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+    return _llm
 
 _description_prompt = PromptTemplate(
     input_variables=["table_info"],
@@ -58,7 +65,9 @@ _description_prompt = PromptTemplate(
     ),
 )
 
-_description_chain = _description_prompt | _llm | StrOutputParser()
+def _get_description_chain():
+    """Build the description chain lazily so the LLM is only created on demand."""
+    return _description_prompt | _get_llm() | StrOutputParser()
 
 
 # =========================================================
@@ -166,7 +175,7 @@ def extract_schema(
                     f"Foreign Keys: {fk_list}"
                 )
 
-                description = _description_chain.invoke({
+                description = _get_description_chain().invoke({
                     "table_info": table_summary,
                 })
                 schema[table_name]["description"] = description.strip()

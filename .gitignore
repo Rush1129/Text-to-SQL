@@ -5,3 +5,6 @@ note.txt
 chroma_db/
 notes/
 *.log
+
+# Docker
+docker-compose.override.yml

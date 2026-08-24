@@ -67,7 +67,13 @@ logger.info("Schema loaded: %d tables.", len(schema))
 # =========================================================
 
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_collection(name="table_schemas")
+try:
+    collection = chroma_client.get_collection(name="table_schemas")
+except Exception:
+    logger.info("ChromaDB collection 'table_schemas' not found. Building from schema.json...")
+    from schema.extractor import build_embeddings
+    build_embeddings(schema, "table_schemas", chroma_path="./chroma_db")
+    collection = chroma_client.get_collection(name="table_schemas")
 logger.info("ChromaDB collection loaded.")
 
 # =========================================================
@@ -83,12 +89,26 @@ except FileNotFoundError:
     logger.warning("examples/examples.json not found — running without examples.")
 
 # =========================================================
-# LLM SETUP
+# LLM SETUP (lazy — avoids crash if GROQ_API_KEY is missing at import)
 # =========================================================
 
-llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
-structured_llm = llm.with_structured_output(StructuredSQLResponse)
-logger.info("LLM initialised.")
+_llm_instance = None
+_structured_llm_instance = None
+
+def get_llm():
+    """Lazily initialise the ChatGroq LLM on first use."""
+    global _llm_instance
+    if _llm_instance is None:
+        _llm_instance = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+        logger.info("LLM initialised.")
+    return _llm_instance
+
+def get_structured_llm():
+    """Lazily initialise the structured-output LLM on first use."""
+    global _structured_llm_instance
+    if _structured_llm_instance is None:
+        _structured_llm_instance = get_llm().with_structured_output(StructuredSQLResponse)
+    return _structured_llm_instance
 
 # =========================================================
 # INFRASTRUCTURE OBJECTS
@@ -98,7 +118,14 @@ PG_DSN = build_dsn()
 
 guardrail     = SQLGuardrail()
 sandbox       = SandboxExecutor(dsn=PG_DSN, readonly=True)
-verifier      = SQLVerifier(llm=llm, flag_threshold=0.65)
+verifier      = None  # initialised lazily via _get_verifier()
+
+def _get_verifier():
+    """Lazily initialise the SQLVerifier on first use."""
+    global verifier
+    if verifier is None:
+        verifier = SQLVerifier(llm=get_llm(), flag_threshold=0.65)
+    return verifier
 sanity_checker = ResultSanityChecker(
     null_pct_threshold=0.40,
     overflow_limit=1e9,
@@ -196,7 +223,9 @@ _prompt_template = PromptTemplate(
     input_variables=["prompt"],
     template="{prompt}",
 )
-_chain = _prompt_template | llm | StrOutputParser()
+def _get_chain():
+    """Build the prompt chain lazily."""
+    return _prompt_template | get_llm() | StrOutputParser()
 
 # =========================================================
 # QUERY RESULT
@@ -465,7 +494,7 @@ def detect_ambiguity(
     logger.debug("Running ambiguity check for: %r", user_question)
     prompt = build_ambiguity_prompt(user_question, s=s, coll=coll)
     try:
-        raw = _chain.invoke({"prompt": prompt})
+        raw = _get_chain().invoke({"prompt": prompt})
         parsed = _extract_json_object(raw)
         if parsed.get("is_ambiguous"):
             logger.info("Question flagged as ambiguous: %r", user_question)
@@ -562,7 +591,7 @@ def generate_structured_sql(
         user_question, s=s, coll=coll,
         conversation_history=conversation_history,
     )
-    response    = structured_llm.invoke(prompt_text)
+    response    = get_structured_llm().invoke(prompt_text)
     is_valid, msg = validate_sql_syntax(response.sql_query)
     logger.info(
         "SQL generated | valid=%s | tables=%s",
@@ -701,7 +730,7 @@ def run_query(
             return result
 
         # ── 4. Back-translation verification ─────────────
-        verif = verifier.verify(question, safe_sql)
+        verif = _get_verifier().verify(question, safe_sql)
         result.back_translated_question = verif.back_translated_question
         result.alignment_score          = verif.alignment_score
         result.alignment_label          = verif.alignment_label
@@ -860,7 +889,7 @@ SQL to validate:
 """
 
     try:
-        raw = _chain.invoke({"prompt": prompt})
+        raw = _get_chain().invoke({"prompt": prompt})
         parsed = _extract_json_object(raw)
 
         # Merge syntax validation result

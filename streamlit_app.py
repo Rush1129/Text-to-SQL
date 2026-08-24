@@ -15,6 +15,7 @@ Run:
     streamlit run streamlit_app.py
 """
 
+import os
 import time
 from datetime import datetime
 
@@ -301,7 +302,7 @@ def _init_state():
         "logged_in":            False,
         # Settings
         "session_id":           "default",
-        "api_base":             "http://localhost:8000",
+        "api_base":             os.environ.get("API_BASE_URL", "http://localhost:8000"),
         # Connections
         "connections":          [],
         "active_connection_id": None,
