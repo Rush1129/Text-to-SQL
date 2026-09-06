@@ -15,3 +15,4 @@ notes/
 note.txt
 *.md
 !requirements.txt
+react-frontend/node_modules/
