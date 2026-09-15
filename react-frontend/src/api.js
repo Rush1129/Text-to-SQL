@@ -3,7 +3,7 @@
  * Mirrors all Streamlit _api helpers for the FastAPI backend.
  */
 
-const DEFAULT_BASE = import.meta.env.TTS_VITE_API_BASE_URL || 'http://localhost:8000';
+const DEFAULT_BASE = import.meta.env.VITE_tts || 'http://localhost:8000';
 
 function getBaseUrl() {
   return localStorage.getItem('api_base_url') || DEFAULT_BASE;
