@@ -1,4 +1,6 @@
 ﻿{
+  "buildCommand": "cd react-frontend && npm install && npm run build",
+  "outputDirectory": "react-frontend/dist",
   "rewrites": [
     {
       "source": "/api/:path*",
