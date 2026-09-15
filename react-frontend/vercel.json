@@ -1,0 +1,8 @@
+﻿{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://text-to-sql-api-quo8.onrender.com/$1"
+    }
+  ]
+}
